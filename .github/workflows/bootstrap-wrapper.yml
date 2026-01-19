@@ -1,0 +1,30 @@
+name: Bootstrap Gradle Wrapper
+
+on:
+  workflow_dispatch:
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Gradle
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gradle
+
+      - name: Generate Gradle Wrapper
+        run: |
+          gradle wrapper --gradle-version 8.6
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      - name: Commit wrapper files
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add gradlew gradlew.bat gradle/wrapper
+          git commit -m "Add Gradle wrapper"
+          git push
