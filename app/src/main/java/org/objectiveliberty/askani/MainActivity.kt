@@ -1,10 +1,13 @@
 package org.objectiveliberty.askani
 
 import android.app.DownloadManager
+import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.MediaStore
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
 import android.webkit.JavascriptInterface
@@ -17,7 +20,7 @@ import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
-import java.io.File
+import java.io.OutputStream
 
 class MainActivity : AppCompatActivity() {
 
@@ -25,21 +28,21 @@ class MainActivity : AppCompatActivity() {
     private val startUrl = "https://objectiveliberty-ani.hf.space/"
 
     /**
-     * JS bridge object exposed to the page as `window.AniAndroid`.
+     * JS bridge exposed to the page.
      *
-     * Your Gradio JS should call:
+     * Supports BOTH:
+     *   window.Android.bankSession(md, html, baseName, projectSafe)
      *   window.AniAndroid.bankToDownloads(md, html, baseName, projectSafe)
      *
-     * This writes:
+     * Writes to Downloads via MediaStore:
      *   Downloads/AnI/Projects/<Project>/Sessions/<base>.md
      *   Downloads/AnI/Projects/<Project>/Exports/<base>.html
      */
     class AniBridge(private val context: Context) {
 
-        private fun safeName(s: String, fallback: String): String {
-            val trimmed = s.trim()
+        private fun safeName(s: String?, fallback: String): String {
+            val trimmed = (s ?: "").trim()
             if (trimmed.isEmpty()) return fallback
-            // allow letters/numbers/dot/_/- only, replace the rest with '-'
             return trimmed.lowercase()
                 .replace(Regex("[^a-z0-9._-]+"), "-")
                 .replace(Regex("-{2,}"), "-")
@@ -48,29 +51,73 @@ class MainActivity : AppCompatActivity() {
                 .take(80)
         }
 
+        private fun writeToDownloads(relativeDir: String, displayName: String, mime: String, text: String): Boolean {
+            val resolver = context.contentResolver
+
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, displayName)
+                put(MediaStore.Downloads.MIME_TYPE, mime)
+                // This is the key: creates/uses folders under Downloads on modern Android
+                put(MediaStore.Downloads.RELATIVE_PATH, relativeDir)
+            }
+
+            val collection: Uri = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            val itemUri = resolver.insert(collection, values) ?: return false
+
+            var out: OutputStream? = null
+            return try {
+                out = resolver.openOutputStream(itemUri)
+                if (out == null) return false
+                out.write(text.toByteArray(Charsets.UTF_8))
+                out.flush()
+                true
+            } catch (_: Exception) {
+                false
+            } finally {
+                try { out?.close() } catch (_: Exception) {}
+            }
+        }
+
+        // --- Method your Gradio JS originally wanted (common pattern): window.Android.bankSession(...) ---
         @JavascriptInterface
-        fun bankToDownloads(mdText: String, htmlText: String, baseName: String, projectSafe: String): String {
+        fun bankSession(mdText: String?, htmlText: String?, baseName: String?, projectSafe: String?): String {
+            return bankInternal(mdText, htmlText, baseName, projectSafe)
+        }
+
+        // --- Method used by your uploaded MainActivity.kt: window.AniAndroid.bankToDownloads(...) ---
+        @JavascriptInterface
+        fun bankToDownloads(mdText: String?, htmlText: String?, baseName: String?, projectSafe: String?): String {
+            return bankInternal(mdText, htmlText, baseName, projectSafe)
+        }
+
+        private fun bankInternal(mdText: String?, htmlText: String?, baseName: String?, projectSafe: String?): String {
             return try {
                 val proj = safeName(projectSafe, "General")
                 val base = safeName(baseName, "ani-session")
 
-                // Public downloads dir
-                val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                // Relative to Downloads/
+                val sessionsRel = "Download/AnI/Projects/$proj/Sessions"
+                val exportsRel  = "Download/AnI/Projects/$proj/Exports"
 
-                val root = File(downloads, "AnI/Projects/$proj")
-                val sessionsDir = File(root, "Sessions")
-                val exportsDir = File(root, "Exports")
+                val okMd = writeToDownloads(
+                    relativeDir = sessionsRel,
+                    displayName = "$base.md",
+                    mime = "text/markdown",
+                    text = mdText ?: ""
+                )
 
-                if (!sessionsDir.exists()) sessionsDir.mkdirs()
-                if (!exportsDir.exists()) exportsDir.mkdirs()
+                val okHtml = writeToDownloads(
+                    relativeDir = exportsRel,
+                    displayName = "$base.html",
+                    mime = "text/html",
+                    text = htmlText ?: ""
+                )
 
-                val mdFile = File(sessionsDir, "$base.md")
-                val htmlFile = File(exportsDir, "$base.html")
-
-                mdFile.writeText(mdText ?: "", Charsets.UTF_8)
-                htmlFile.writeText(htmlText ?: "", Charsets.UTF_8)
-
-                "Saved ✓  (Downloads/AnI/Projects/$proj/Sessions/$base.md)"
+                if (okMd && okHtml) {
+                    "Saved ✓ (Downloads/AnI/Projects/$proj/Sessions/$base.md)"
+                } else {
+                    "Vault: Android save failed (couldn't write to Downloads). Try Advanced → Export / Print."
+                }
             } catch (e: Exception) {
                 "Vault: Android save failed (${e.javaClass.simpleName}). Use Advanced → Export / Print."
             }
@@ -104,9 +151,10 @@ class MainActivity : AppCompatActivity() {
 
         webView.webChromeClient = WebChromeClient()
 
-        // IMPORTANT: Bridge name must match your Gradio JS detection
-        // JS expects window.AniAndroid.bankToDownloads(...)
-        webView.addJavascriptInterface(AniBridge(this), "AniAndroid")
+        // Expose the SAME bridge under both names to match any JS you’ve used
+        val bridge = AniBridge(this)
+        webView.addJavascriptInterface(bridge, "Android")     // window.Android.*
+        webView.addJavascriptInterface(bridge, "AniAndroid")  // window.AniAndroid.*
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
