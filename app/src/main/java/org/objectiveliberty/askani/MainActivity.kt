@@ -1,10 +1,10 @@
 package org.objectiveliberty.askani
 
 import android.app.DownloadManager
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
@@ -20,6 +20,7 @@ import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
+import org.json.JSONArray
 import java.io.OutputStream
 
 class MainActivity : AppCompatActivity() {
@@ -33,6 +34,10 @@ class MainActivity : AppCompatActivity() {
      * Supports BOTH:
      *   window.Android.bankSession(md, html, baseName, projectSafe)
      *   window.AniAndroid.bankToDownloads(md, html, baseName, projectSafe)
+     *
+     * Adds:
+     *   window.Android.listProjects()
+     *   window.AniAndroid.listProjects()
      *
      * Writes to Downloads via MediaStore:
      *   Downloads/AnI/Projects/<Project>/Sessions/<base>.md
@@ -57,7 +62,7 @@ class MainActivity : AppCompatActivity() {
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, displayName)
                 put(MediaStore.Downloads.MIME_TYPE, mime)
-                // This is the key: creates/uses folders under Downloads on modern Android
+                // Creates/uses folders under Downloads on modern Android
                 put(MediaStore.Downloads.RELATIVE_PATH, relativeDir)
             }
 
@@ -78,13 +83,77 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        /**
+         * List existing project folder names under Downloads/AnI/Projects.
+         *
+         * We do this by querying MediaStore.Downloads for rows whose RELATIVE_PATH begins with:
+         *   "Download/AnI/Projects/"
+         *
+         * Then we parse the next path segment after "Projects/" as the project name.
+         *
+         * Returns a JSON array string, e.g.:
+         *   ["General","wyre","recipes"]
+         */
+        @JavascriptInterface
+        fun listProjects(): String {
+            return try {
+                val resolver = context.contentResolver
+
+                // NOTE: Environment.DIRECTORY_DOWNLOADS is "Download"
+                val prefix = "${Environment.DIRECTORY_DOWNLOADS}/AnI/Projects/"
+
+                val projection = arrayOf(
+                    MediaStore.Downloads._ID,
+                    MediaStore.Downloads.RELATIVE_PATH
+                )
+
+                // RELATIVE_PATH is not indexed the same on all devices; LIKE is usually fine.
+                val selection = "${MediaStore.Downloads.RELATIVE_PATH} LIKE ?"
+                val selectionArgs = arrayOf("$prefix%")
+
+                val projects = linkedSetOf<String>()
+
+                resolver.query(
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    projection,
+                    selection,
+                    selectionArgs,
+                    null
+                )?.use { cursor ->
+                    val pathIdx = cursor.getColumnIndex(MediaStore.Downloads.RELATIVE_PATH)
+
+                    while (cursor.moveToNext()) {
+                        val relPath = if (pathIdx >= 0) cursor.getString(pathIdx) else null
+                        if (relPath.isNullOrBlank()) continue
+
+                        // Example:
+                        // "Download/AnI/Projects/my-project/Sessions/"
+                        // We want "my-project"
+                        val after = relPath.substringAfter(prefix, missingDelimiterValue = "")
+                        if (after.isBlank()) continue
+
+                        val proj = after.substringBefore("/", missingDelimiterValue = "").trim()
+                        if (proj.isNotBlank()) {
+                            projects.add(proj)
+                        }
+                    }
+                }
+
+                val arr = JSONArray()
+                projects.sorted().forEach { arr.put(it) }
+                arr.toString()
+            } catch (_: Exception) {
+                "[]"
+            }
+        }
+
         // --- Method your Gradio JS originally wanted (common pattern): window.Android.bankSession(...) ---
         @JavascriptInterface
         fun bankSession(mdText: String?, htmlText: String?, baseName: String?, projectSafe: String?): String {
             return bankInternal(mdText, htmlText, baseName, projectSafe)
         }
 
-        // --- Method used by your uploaded MainActivity.kt: window.AniAndroid.bankToDownloads(...) ---
+        // --- Method used by your UI JS: window.AniAndroid.bankToDownloads(...) ---
         @JavascriptInterface
         fun bankToDownloads(mdText: String?, htmlText: String?, baseName: String?, projectSafe: String?): String {
             return bankInternal(mdText, htmlText, baseName, projectSafe)
@@ -96,8 +165,8 @@ class MainActivity : AppCompatActivity() {
                 val base = safeName(baseName, "ani-session")
 
                 // Relative to Downloads/
-                val sessionsRel = "Download/AnI/Projects/$proj/Sessions"
-                val exportsRel  = "Download/AnI/Projects/$proj/Exports"
+                val sessionsRel = "${Environment.DIRECTORY_DOWNLOADS}/AnI/Projects/$proj/Sessions"
+                val exportsRel  = "${Environment.DIRECTORY_DOWNLOADS}/AnI/Projects/$proj/Exports"
 
                 val okMd = writeToDownloads(
                     relativeDir = sessionsRel,
