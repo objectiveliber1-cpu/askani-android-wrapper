@@ -1,9 +1,9 @@
 package org.objectiveliberty.askani
 
 import android.app.DownloadManager
-import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
+import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
@@ -28,21 +28,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private val startUrl = "https://objectiveliberty-ani.hf.space/"
 
-    /**
-     * JS bridge exposed to the page.
-     *
-     * Supports BOTH:
-     *   window.Android.bankSession(md, html, baseName, projectSafe)
-     *   window.AniAndroid.bankToDownloads(md, html, baseName, projectSafe)
-     *
-     * Adds:
-     *   window.Android.listProjects()
-     *   window.AniAndroid.listProjects()
-     *
-     * Writes to Downloads via MediaStore:
-     *   Downloads/AnI/Projects/<Project>/Sessions/<base>.md
-     *   Downloads/AnI/Projects/<Project>/Exports/<base>.html
-     */
     class AniBridge(private val context: Context) {
 
         private fun safeName(s: String?, fallback: String): String {
@@ -62,7 +47,6 @@ class MainActivity : AppCompatActivity() {
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, displayName)
                 put(MediaStore.Downloads.MIME_TYPE, mime)
-                // Creates/uses folders under Downloads on modern Android
                 put(MediaStore.Downloads.RELATIVE_PATH, relativeDir)
             }
 
@@ -83,77 +67,11 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        /**
-         * List existing project folder names under Downloads/AnI/Projects.
-         *
-         * We do this by querying MediaStore.Downloads for rows whose RELATIVE_PATH begins with:
-         *   "Download/AnI/Projects/"
-         *
-         * Then we parse the next path segment after "Projects/" as the project name.
-         *
-         * Returns a JSON array string, e.g.:
-         *   ["General","wyre","recipes"]
-         */
-        @JavascriptInterface
-        fun listProjects(): String {
-            return try {
-                val resolver = context.contentResolver
-
-                // NOTE: Environment.DIRECTORY_DOWNLOADS is "Download"
-                val prefix = "${Environment.DIRECTORY_DOWNLOADS}/AnI/Projects/"
-
-                val projection = arrayOf(
-                    MediaStore.Downloads._ID,
-                    MediaStore.Downloads.RELATIVE_PATH
-                )
-
-                // RELATIVE_PATH is not indexed the same on all devices; LIKE is usually fine.
-                val selection = "${MediaStore.Downloads.RELATIVE_PATH} LIKE ?"
-                val selectionArgs = arrayOf("$prefix%")
-
-                val projects = linkedSetOf<String>()
-
-                resolver.query(
-                    MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-                    projection,
-                    selection,
-                    selectionArgs,
-                    null
-                )?.use { cursor ->
-                    val pathIdx = cursor.getColumnIndex(MediaStore.Downloads.RELATIVE_PATH)
-
-                    while (cursor.moveToNext()) {
-                        val relPath = if (pathIdx >= 0) cursor.getString(pathIdx) else null
-                        if (relPath.isNullOrBlank()) continue
-
-                        // Example:
-                        // "Download/AnI/Projects/my-project/Sessions/"
-                        // We want "my-project"
-                        val after = relPath.substringAfter(prefix, missingDelimiterValue = "")
-                        if (after.isBlank()) continue
-
-                        val proj = after.substringBefore("/", missingDelimiterValue = "").trim()
-                        if (proj.isNotBlank()) {
-                            projects.add(proj)
-                        }
-                    }
-                }
-
-                val arr = JSONArray()
-                projects.sorted().forEach { arr.put(it) }
-                arr.toString()
-            } catch (_: Exception) {
-                "[]"
-            }
-        }
-
-        // --- Method your Gradio JS originally wanted (common pattern): window.Android.bankSession(...) ---
         @JavascriptInterface
         fun bankSession(mdText: String?, htmlText: String?, baseName: String?, projectSafe: String?): String {
             return bankInternal(mdText, htmlText, baseName, projectSafe)
         }
 
-        // --- Method used by your UI JS: window.AniAndroid.bankToDownloads(...) ---
         @JavascriptInterface
         fun bankToDownloads(mdText: String?, htmlText: String?, baseName: String?, projectSafe: String?): String {
             return bankInternal(mdText, htmlText, baseName, projectSafe)
@@ -165,8 +83,8 @@ class MainActivity : AppCompatActivity() {
                 val base = safeName(baseName, "ani-session")
 
                 // Relative to Downloads/
-                val sessionsRel = "${Environment.DIRECTORY_DOWNLOADS}/AnI/Projects/$proj/Sessions"
-                val exportsRel  = "${Environment.DIRECTORY_DOWNLOADS}/AnI/Projects/$proj/Exports"
+                val sessionsRel = "Download/AnI/Projects/$proj/Sessions"
+                val exportsRel  = "Download/AnI/Projects/$proj/Exports"
 
                 val okMd = writeToDownloads(
                     relativeDir = sessionsRel,
@@ -191,6 +109,57 @@ class MainActivity : AppCompatActivity() {
                 "Vault: Android save failed (${e.javaClass.simpleName}). Use Advanced → Export / Print."
             }
         }
+
+        /**
+         * Return JSON array of project folder names detected in Downloads/AnI/Projects/...
+         *
+         * We infer project names by scanning Download entries where RELATIVE_PATH contains:
+         *   Download/AnI/Projects/<Project>/
+         */
+        @JavascriptInterface
+        fun listProjects(): String {
+            return try {
+                val resolver = context.contentResolver
+                val uri = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+
+                val projection = arrayOf(
+                    MediaStore.Downloads.RELATIVE_PATH
+                )
+
+                val selection = "${MediaStore.Downloads.RELATIVE_PATH} LIKE ?"
+                val args = arrayOf("Download/AnI/Projects/%")
+
+                val projects = linkedSetOf<String>()
+
+                resolver.query(uri, projection, selection, args, null).use { cursor: Cursor? ->
+                    if (cursor != null) {
+                        val idx = cursor.getColumnIndex(MediaStore.Downloads.RELATIVE_PATH)
+                        while (cursor.moveToNext()) {
+                            val rel = cursor.getString(idx) ?: continue
+                            // rel like: "Download/AnI/Projects/<proj>/Sessions/"
+                            val marker = "Download/AnI/Projects/"
+                            val start = rel.indexOf(marker)
+                            if (start >= 0) {
+                                val rest = rel.substring(start + marker.length)
+                                val slash = rest.indexOf('/')
+                                if (slash > 0) {
+                                    val proj = rest.substring(0, slash).trim()
+                                    if (proj.isNotEmpty()) projects.add(proj)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Ensure General is present first
+                val out = JSONArray()
+                if (!projects.contains("General")) out.put("General")
+                projects.forEach { out.put(it) }
+                out.toString()
+            } catch (_: Exception) {
+                "[]"
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -210,7 +179,6 @@ class MainActivity : AppCompatActivity() {
         ws.mediaPlaybackRequiresUserGesture = false
         ws.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
 
-        // Prevent ugly/inverted WebView "force dark" behavior
         if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
             WebSettingsCompat.setForceDark(ws, WebSettingsCompat.FORCE_DARK_OFF)
         }
@@ -220,19 +188,16 @@ class MainActivity : AppCompatActivity() {
 
         webView.webChromeClient = WebChromeClient()
 
-        // Expose the SAME bridge under both names to match any JS you’ve used
         val bridge = AniBridge(this)
-        webView.addJavascriptInterface(bridge, "Android")     // window.Android.*
-        webView.addJavascriptInterface(bridge, "AniAndroid")  // window.AniAndroid.*
+        webView.addJavascriptInterface(bridge, "Android")
+        webView.addJavascriptInterface(bridge, "AniAndroid")
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                // Keep all links inside the app
                 return false
             }
         }
 
-        // Make downloads work (Advanced -> Export links / generated files)
         webView.setDownloadListener(DownloadListener { url, userAgent, contentDisposition, mimetype, _ ->
             try {
                 val uri = Uri.parse(url)
