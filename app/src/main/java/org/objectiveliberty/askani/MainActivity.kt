@@ -14,6 +14,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.documentfile.provider.DocumentFile
 import org.json.JSONArray
+import org.json.JSONObject
 import java.nio.charset.Charset
 
 class MainActivity : AppCompatActivity() {
@@ -23,41 +24,23 @@ class MainActivity : AppCompatActivity() {
     private val prefs by lazy { getSharedPreferences("ani_prefs", Context.MODE_PRIVATE) }
     private val KEY_VAULT_URI = "vault_tree_uri"
 
-    // Change if you want to point to a different URL later
-    private val START_URL = "https://objectiveliberty-ani.hf.space"
-
     private val pickVaultTree = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { res ->
         val uri = res.data?.data
         if (res.resultCode == RESULT_OK && uri != null) {
-            val ok = try {
-                // Persist permission for future launches
-                val flags = res.data?.flags ?: 0
-                val takeFlags = flags and
-                    (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            // SAF providers sometimes return 0 flags; don't trust them.
+            // Always attempt to persist BOTH read + write.
+            persistVaultPermission(uri)
 
-                contentResolver.takePersistableUriPermission(uri, takeFlags)
-                prefs.edit().putString(KEY_VAULT_URI, uri.toString()).apply()
-                true
-            } catch (_: Exception) {
-                false
-            }
+            prefs.edit().putString(KEY_VAULT_URI, uri.toString()).apply()
 
-            // Notify web UI (best-effort)
             runOnUiThread {
-                if (ok) {
-                    webView.evaluateJavascript(
-                        "window.__aniVaultAndroidUri = ${jsQuote(uri.toString())};" +
+                webView.evaluateJavascript(
+                    "window.__aniVaultAndroidUri = ${jsQuote(uri.toString())};" +
                             "if (window.aniOnVaultReady) window.aniOnVaultReady(true);",
-                        null
-                    )
-                } else {
-                    webView.evaluateJavascript(
-                        "if (window.aniOnVaultReady) window.aniOnVaultReady(false);",
-                        null
-                    )
-                }
+                    null
+                )
             }
         } else {
             runOnUiThread {
@@ -76,21 +59,8 @@ class MainActivity : AppCompatActivity() {
         webView = WebView(this)
         setContentView(webView)
 
+        webView.webViewClient = WebViewClient()
         webView.webChromeClient = WebChromeClient()
-        webView.webViewClient = object : WebViewClient() {
-            override fun onPageFinished(view: WebView?, url: String?) {
-                super.onPageFinished(view, url)
-
-                // Inject cached vault URI into page after load (best-effort)
-                val uri = prefs.getString(KEY_VAULT_URI, null)
-                if (!uri.isNullOrBlank()) {
-                    webView.evaluateJavascript(
-                        "window.__aniVaultAndroidUri = ${jsQuote(uri)};",
-                        null
-                    )
-                }
-            }
-        }
 
         val s: WebSettings = webView.settings
         s.javaScriptEnabled = true
@@ -99,12 +69,34 @@ class MainActivity : AppCompatActivity() {
         s.allowContentAccess = true
         s.mediaPlaybackRequiresUserGesture = true
 
-        // Expose bridge to JS as window.AniAndroid (and window.Android for backwards compat)
+        // Bridge exposed as BOTH AniAndroid and Android (keeps backward compatibility with your JS)
         val bridge = AniBridge(this)
         webView.addJavascriptInterface(bridge, "AniAndroid")
         webView.addJavascriptInterface(bridge, "Android")
 
-        webView.loadUrl(START_URL)
+        // Load your hosted UI
+        webView.loadUrl("https://objectiveliberty-ani.hf.space")
+
+        // Best-effort: re-take persisted permission on startup (some providers are picky)
+        val saved = prefs.getString(KEY_VAULT_URI, null)
+        if (!saved.isNullOrBlank()) {
+            try {
+                persistVaultPermission(Uri.parse(saved))
+            } catch (_: Exception) {
+                // ignore
+            }
+        }
+
+        // Inject cached vault URI into page when ready (best-effort)
+        webView.postDelayed({
+            val uriStr = prefs.getString(KEY_VAULT_URI, null)
+            if (!uriStr.isNullOrBlank()) {
+                webView.evaluateJavascript(
+                    "window.__aniVaultAndroidUri = ${jsQuote(uriStr)};",
+                    null
+                )
+            }
+        }, 800)
     }
 
     private fun launchVaultPicker() {
@@ -117,8 +109,21 @@ class MainActivity : AppCompatActivity() {
         pickVaultTree.launch(intent)
     }
 
+    private fun persistVaultPermission(uri: Uri) {
+        try {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+        } catch (_: SecurityException) {
+            // Some providers throw even when it "works enough" for the current session.
+            // We'll still store the URI and attempt to use it.
+        } catch (_: Exception) {
+            // ignore
+        }
+    }
+
     private fun jsQuote(s: String): String {
-        // minimal JS string quoting
         val esc = s.replace("\\", "\\\\").replace("'", "\\'")
         return "'$esc'"
     }
@@ -139,22 +144,36 @@ class MainActivity : AppCompatActivity() {
             return if (uri.isNullOrBlank()) "Vault not set" else "Vault set ✓"
         }
 
+        /**
+         * Returns JSON array string: ["Project1","Project2",...]
+         */
         @JavascriptInterface
         fun listProjects(): String {
             val projectsDir = resolveProjectsDir(createIfMissing = false) ?: return "[]"
-            val out = JSONArray()
 
-            val children = projectsDir.listFiles()
-                .filter { it.isDirectory }
-                .mapNotNull { it.name }
-                .sortedBy { it.lowercase() }
+            val out = JSONArray()
+            val children = try {
+                projectsDir.listFiles()
+                    .filter { it.isDirectory }
+                    .mapNotNull { it.name }
+                    .sortedBy { it.lowercase() }
+            } catch (_: Exception) {
+                emptyList()
+            }
 
             for (name in children) out.put(name)
             return out.toString()
         }
 
-        // Keep name bankToDownloads to match your current ui.py VAULT_JS expectations.
-        // It writes into the selected SAF vault tree (NOT "real Downloads").
+        /**
+         * Saves into:
+         *   <vault>/AnI/Projects/<proj>/Sessions/<base>.md
+         *   <vault>/AnI/Projects/<proj>/Exports/<base>.html
+         *
+         * BUT if user picked:
+         *   - "AnI" folder directly => treat that as the AnI root
+         *   - "Projects" folder directly => treat that as Projects root
+         */
         @JavascriptInterface
         fun bankToDownloads(md: String?, html: String?, baseName: String?, projectSafe: String?): String {
             val proj = (projectSafe ?: "General").ifBlank { "General" }
@@ -163,7 +182,7 @@ class MainActivity : AppCompatActivity() {
             val htmlText = html ?: ""
 
             val projectsDir = resolveProjectsDir(createIfMissing = true)
-                ?: return "Vault not set. Use Grant Vault Access."
+                ?: return "Vault not set. Use Bank options → Select Vault."
 
             val projDir = getOrCreateDir(projectsDir, proj) ?: return "Vault write failed."
             val sessionsDir = getOrCreateDir(projDir, "Sessions") ?: return "Vault write failed."
@@ -179,32 +198,45 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // ---------- Internal helpers ----------
+        /**
+         * Optional: call from JS if you want a quick permission/path sanity check.
+         */
+        @JavascriptInterface
+        fun vaultDebug(): String {
+            val j = JSONObject()
+            j.put("savedUri", activity.prefs.getString(activity.KEY_VAULT_URI, null) ?: JSONObject.NULL)
 
-        private fun resolveProjectsDir(createIfMissing: Boolean): DocumentFile? {
-            val root = getVaultRoot() ?: return null
-            val rootName = (root.name ?: "").trim().lowercase()
-
-            // The user might pick:
-            // 1) the AnI folder itself
-            // 2) the Projects folder itself
-            // 3) a parent folder (we should find/create AnI/Projects inside it)
-            return when (rootName) {
-                "ani" -> {
-                    // root is already AnI
-                    findOrCreateDir(root, "Projects", createIfMissing)
+            val persisted = try {
+                activity.contentResolver.persistedUriPermissions.map {
+                    JSONObject()
+                        .put("uri", it.uri.toString())
+                        .put("read", it.isReadPermission)
+                        .put("write", it.isWritePermission)
                 }
-                "projects" -> {
-                    // root is already Projects
-                    root
-                }
-                else -> {
-                    // root is some parent folder; find/create AnI/Projects within it
-                    val ani = findOrCreateDir(root, "AnI", createIfMissing) ?: return null
-                    findOrCreateDir(ani, "Projects", createIfMissing)
-                }
+            } catch (_: Exception) {
+                emptyList()
             }
+            j.put("persisted", JSONArray(persisted))
+
+            val root = getVaultRoot()
+            j.put("rootName", root?.name ?: JSONObject.NULL)
+            j.put("rootUri", root?.uri?.toString() ?: JSONObject.NULL)
+
+            val projectsDir = resolveProjectsDir(createIfMissing = false)
+            j.put("projectsDirName", projectsDir?.name ?: JSONObject.NULL)
+            j.put("projectsDirUri", projectsDir?.uri?.toString() ?: JSONObject.NULL)
+
+            val kids = try {
+                projectsDir?.listFiles()?.mapNotNull { it.name } ?: emptyList()
+            } catch (_: Exception) {
+                emptyList()
+            }
+            j.put("projectsChildren", JSONArray(kids))
+
+            return j.toString()
         }
+
+        // ---------- Internal helpers ----------
 
         private fun getVaultRoot(): DocumentFile? {
             val uriStr = activity.prefs.getString(activity.KEY_VAULT_URI, null) ?: return null
@@ -214,6 +246,32 @@ class MainActivity : AppCompatActivity() {
             } catch (_: Exception) {
                 null
             }
+        }
+
+        /**
+         * Handles vault selection being:
+         *  - AnI folder itself
+         *  - Projects folder itself
+         *  - A parent folder where we should use/create AnI/Projects
+         */
+        private fun resolveProjectsDir(createIfMissing: Boolean): DocumentFile? {
+            val root = getVaultRoot() ?: return null
+            val rootName = (root.name ?: "").trim().lowercase()
+
+            // If user picked Projects directly, use it as projectsDir
+            if (rootName == "projects") {
+                return root
+            }
+
+            // Determine the AnI directory
+            val aniDir: DocumentFile? = if (rootName == "ani") {
+                root
+            } else {
+                findOrCreateDir(root, "AnI", createIfMissing)
+            } ?: return null
+
+            // Projects directory is AnI/Projects
+            return findOrCreateDir(aniDir, "Projects", createIfMissing)
         }
 
         private fun findOrCreateDir(parent: DocumentFile, name: String, create: Boolean): DocumentFile? {
