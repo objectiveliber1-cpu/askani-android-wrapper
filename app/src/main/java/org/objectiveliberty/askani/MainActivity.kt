@@ -31,9 +31,6 @@ class MainActivity : AppCompatActivity() {
         if (res.resultCode == RESULT_OK && uri != null) {
             try {
                 val flags = res.data?.flags ?: 0
-
-                // Some devices/flows do not return expected flags reliably.
-                // Persistable permission requires READ/WRITE flags.
                 val requested = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 val takeFlags = (flags and requested).let { if (it == 0) requested else it }
 
@@ -88,7 +85,6 @@ class MainActivity : AppCompatActivity() {
 
         webView.loadUrl("https://objectiveliberty-ani.hf.space")
 
-        // Inject saved vault URI for UI diagnostics
         webView.postDelayed({
             val uri = prefs.getString(KEY_VAULT_URI, null)
             if (!uri.isNullOrBlank()) {
@@ -114,8 +110,6 @@ class MainActivity : AppCompatActivity() {
 
     class AniBridge(private val activity: MainActivity) {
 
-        // ---------- JS API ----------
-
         @JavascriptInterface
         fun pickVaultFolder(): String {
             activity.runOnUiThread { activity.launchVaultPicker() }
@@ -128,10 +122,6 @@ class MainActivity : AppCompatActivity() {
             return if (uri.isNullOrBlank()) "Vault not set" else "Vault set ✓"
         }
 
-        /**
-         * Returns a JSON array string of project folder names.
-         * Always valid JSON, even when vault is missing/unreadable.
-         */
         @JavascriptInterface
         fun listProjects(): String {
             val projectsDir = resolveProjectsDir(createIfMissing = false) ?: return "[]"
@@ -147,10 +137,6 @@ class MainActivity : AppCompatActivity() {
             return out.toString()
         }
 
-        /**
-         * Debug helper: returns JSON object about vault resolution and scan results.
-         * Call from JS to see *exactly* what Android thinks the vault path is.
-         */
         @JavascriptInterface
         fun debugVault(): String {
             val obj = JSONObject()
@@ -184,7 +170,6 @@ class MainActivity : AppCompatActivity() {
             return obj.toString()
         }
 
-        // New name (preferred by ui.py). Kept "bankToDownloads" compat below.
         @JavascriptInterface
         fun bankToVault(md: String?, html: String?, baseName: String?, projectSafe: String?): String {
             return bankInternal(md, html, baseName, projectSafe)
@@ -194,8 +179,6 @@ class MainActivity : AppCompatActivity() {
         fun bankToDownloads(md: String?, html: String?, baseName: String?, projectSafe: String?): String {
             return bankInternal(md, html, baseName, projectSafe)
         }
-
-        // ---------- Internal ----------
 
         private fun bankInternal(md: String?, html: String?, baseName: String?, projectSafe: String?): String {
             val proj = (projectSafe ?: "General").ifBlank { "General" }
@@ -216,17 +199,6 @@ class MainActivity : AppCompatActivity() {
             return if (ok1 && ok2) "Saved ✓ (Projects/$proj/Sessions/$base.md)" else "Vault write failed."
         }
 
-        /**
-         * Stable vault resolution:
-         * - Prefer existing case-insensitive matches for "AnI" and "Projects"
-         * - Only create folders when createIfMissing=true
-         *
-         * Supports selecting:
-         *  - Projects folder directly
-         *  - AnI folder directly
-         *  - A parent that contains AnI (any case)
-         *  - A parent that contains Projects (any case)
-         */
         private fun resolveProjectsDir(createIfMissing: Boolean): DocumentFile? {
             val uriStr = activity.prefs.getString(activity.KEY_VAULT_URI, null) ?: return null
             val treeUri = Uri.parse(uriStr)
@@ -236,16 +208,13 @@ class MainActivity : AppCompatActivity() {
 
             val rootNameLc = (root.name ?: "").lowercase()
 
-            // If user picked Projects directly
             if (rootNameLc == "projects") return root
 
-            // Helper: find child dir by name case-insensitive
             fun findChildDirCaseInsensitive(parent: DocumentFile, wantedLc: String): DocumentFile? {
                 return parent.listFiles()
                     .firstOrNull { it.isDirectory && (it.name ?: "").lowercase() == wantedLc }
             }
 
-            // Helper: find or create exact-name directory, but accept existing case-insensitive match
             fun findOrCreateDirSmart(parent: DocumentFile, nameExact: String, wantedLc: String): DocumentFile? {
                 val existingCi = findChildDirCaseInsensitive(parent, wantedLc)
                 if (existingCi != null) return existingCi
@@ -253,19 +222,16 @@ class MainActivity : AppCompatActivity() {
                 return try { parent.createDirectory(nameExact) } catch (_: Exception) { null }
             }
 
-            // If user picked AnI directly
-            val aniDir: DocumentFile? = if (rootNameLc == "ani") {
+            // ✅ FIX: aniDir is now non-null at the type level
+            val aniDir = (if (rootNameLc == "ani") {
                 root
             } else {
-                // Prefer existing "AnI" child; else create when allowed
                 findOrCreateDirSmart(root, "AnI", "ani")
-            } ?: return null
+            }) ?: return null
 
-            // Under AnI, prefer existing Projects; else create when allowed
             val projectsDir = findOrCreateDirSmart(aniDir, "Projects", "projects")
             if (projectsDir != null) return projectsDir
 
-            // Additional fallback: user picked a parent that contains Projects directly (without AnI)
             val projectsDirect = findChildDirCaseInsensitive(root, "projects")
             if (projectsDirect != null) return projectsDirect
 
