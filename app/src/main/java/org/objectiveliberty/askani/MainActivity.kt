@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
@@ -16,6 +15,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.documentfile.provider.DocumentFile
 import org.json.JSONArray
 import java.nio.charset.Charset
+import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
 
@@ -31,18 +31,36 @@ class MainActivity : AppCompatActivity() {
         if (res.resultCode == RESULT_OK && uri != null) {
             try {
                 // Persist permission for future launches
-                val takeFlags =
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                val flags = res.data?.flags ?: 0
+                val takeFlags = flags and
+                        (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+
                 contentResolver.takePersistableUriPermission(uri, takeFlags)
                 prefs.edit().putString(KEY_VAULT_URI, uri.toString()).apply()
 
-                notifyVaultReady(true)
-            } catch (e: Exception) {
-                Log.e("AnI", "Failed to persist vault URI permission", e)
-                notifyVaultReady(false)
+                // Notify the web UI
+                runOnUiThread {
+                    webView.evaluateJavascript(
+                        "window.__aniVaultAndroidUri=${jsQuote(uri.toString())};" +
+                                "if(window.aniOnVaultReady)window.aniOnVaultReady(true);",
+                        null
+                    )
+                }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    webView.evaluateJavascript(
+                        "if(window.aniOnVaultReady)window.aniOnVaultReady(false);",
+                        null
+                    )
+                }
             }
         } else {
-            notifyVaultReady(false)
+            runOnUiThread {
+                webView.evaluateJavascript(
+                    "if(window.aniOnVaultReady)window.aniOnVaultReady(false);",
+                    null
+                )
+            }
         }
     }
 
@@ -53,31 +71,7 @@ class MainActivity : AppCompatActivity() {
         webView = WebView(this)
         setContentView(webView)
 
-        webView.webViewClient = object : WebViewClient() {
-            override fun onPageFinished(view: WebView?, url: String?) {
-                super.onPageFinished(view, url)
-
-                // Best-effort: inject stored vault uri and status into JS after page load
-                val uriStr = prefs.getString(KEY_VAULT_URI, null)
-                if (!uriStr.isNullOrBlank()) {
-                    // Also best-effort re-take permission (some ROMs are picky)
-                    try {
-                        val uri = Uri.parse(uriStr)
-                        val takeFlags =
-                            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                        contentResolver.takePersistableUriPermission(uri, takeFlags)
-                    } catch (_: Exception) {
-                        // ignore
-                    }
-
-                    webView.evaluateJavascript(
-                        "window.__aniVaultAndroidUri=${jsQuote(uriStr)};" +
-                                "if(window.aniOnVaultReady){window.aniOnVaultReady(true);} ",
-                        null
-                    )
-                }
-            }
-        }
+        webView.webViewClient = WebViewClient()
         webView.webChromeClient = WebChromeClient()
 
         val s: WebSettings = webView.settings
@@ -87,21 +81,24 @@ class MainActivity : AppCompatActivity() {
         s.allowContentAccess = true
         s.mediaPlaybackRequiresUserGesture = true
 
-        // Bridge exposed as AniAndroid
+        // Bridge exposed as BOTH AniAndroid and Android (compat)
         val bridge = AniBridge(this)
         webView.addJavascriptInterface(bridge, "AniAndroid")
+        webView.addJavascriptInterface(bridge, "Android")
 
-        // Load your HF space
+        // Your HF Space
         webView.loadUrl("https://objectiveliberty-ani.hf.space")
-    }
 
-    private fun notifyVaultReady(ok: Boolean) {
-        runOnUiThread {
-            webView.evaluateJavascript(
-                "if(window.aniOnVaultReady){window.aniOnVaultReady(${if (ok) "true" else "false"});} ",
-                null
-            )
-        }
+        // Inject cached vault URI (best effort) after the page starts up
+        webView.postDelayed({
+            val uri = prefs.getString(KEY_VAULT_URI, null)
+            if (!uri.isNullOrBlank()) {
+                webView.evaluateJavascript(
+                    "window.__aniVaultAndroidUri=${jsQuote(uri)};",
+                    null
+                )
+            }
+        }, 900)
     }
 
     private fun launchVaultPicker() {
@@ -121,9 +118,7 @@ class MainActivity : AppCompatActivity() {
 
     class AniBridge(private val activity: MainActivity) {
 
-        // --------------------------
-        // Public JS API
-        // --------------------------
+        // ---------- Public JS API ----------
 
         @JavascriptInterface
         fun pickVaultFolder(): String {
@@ -133,20 +128,19 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun vaultStatus(): String {
-            return if (getVaultUri().isNullOrBlank()) "Vault not set" else "Vault set ✓"
+            val uri = activity.prefs.getString(activity.KEY_VAULT_URI, null)
+            return if (uri.isNullOrBlank()) "Vault not set" else "Vault set ✓"
         }
 
         @JavascriptInterface
         fun listProjects(): String {
             val projectsDir = resolveProjectsDir(createIfMissing = false) ?: return "[]"
             val out = JSONArray()
-
-            val children = projectsDir.listFiles()
+            val kids = projectsDir.listFiles()
                 .filter { it.isDirectory }
                 .mapNotNull { it.name }
-                .sortedBy { it.lowercase() }
-
-            for (name in children) out.put(name)
+                .sortedBy { it.lowercase(Locale.getDefault()) }
+            for (n in kids) out.put(n)
             return out.toString()
         }
 
@@ -158,7 +152,7 @@ class MainActivity : AppCompatActivity() {
             val htmlText = html ?: ""
 
             val projectsDir = resolveProjectsDir(createIfMissing = true)
-                ?: return "Vault not set. Use Bank options → Grant Vault Access."
+                ?: return "Vault not set. Use Vault → Grant access."
 
             val projDir = getOrCreateDir(projectsDir, proj) ?: return "Vault write failed."
             val sessionsDir = getOrCreateDir(projDir, "Sessions") ?: return "Vault write failed."
@@ -167,23 +161,13 @@ class MainActivity : AppCompatActivity() {
             val ok1 = writeTextFile(sessionsDir, "$base.md", mdText)
             val ok2 = writeTextFile(exportsDir, "$base.html", htmlText)
 
-            return if (ok1 && ok2) {
-                "Saved ✓ (Projects/$proj/Sessions/$base.md)"
-            } else {
-                "Vault write failed."
-            }
+            return if (ok1 && ok2) "Saved ✓ (Projects/$proj/Sessions/$base.md)" else "Vault write failed."
         }
 
-        // --------------------------
-        // Internals
-        // --------------------------
-
-        private fun getVaultUri(): String? {
-            return activity.prefs.getString(activity.KEY_VAULT_URI, null)
-        }
+        // ---------- Internal helpers ----------
 
         private fun getVaultRoot(): DocumentFile? {
-            val uriStr = getVaultUri() ?: return null
+            val uriStr = activity.prefs.getString(activity.KEY_VAULT_URI, null) ?: return null
             return try {
                 val uri = Uri.parse(uriStr)
                 DocumentFile.fromTreeUri(activity, uri)
@@ -193,40 +177,55 @@ class MainActivity : AppCompatActivity() {
         }
 
         /**
-         * Robust resolution rules:
-         * - If selected folder contains a "Projects" directory, treat selected folder as AnI root.
-         * - If selected folder IS "Projects", treat it as Projects dir.
-         * - Else if selected folder contains "AnI", treat selected as container -> selected/AnI/Projects.
-         * - Else create selected/AnI/Projects (when createIfMissing=true).
+         * IMPORTANT:
+         * Users may pick:
+         *  - the AnI folder itself        -> use it directly
+         *  - the Projects folder itself   -> use it directly as projectsDir
+         *  - a parent folder             -> find/create AnI/Projects under it
+         *
+         * Also: DocumentFile.findFile() can be case-sensitive; we match ignoring case.
          */
         private fun resolveProjectsDir(createIfMissing: Boolean): DocumentFile? {
-            val root = getVaultRoot() ?: return null
+            val picked = getVaultRoot() ?: return null
+            val pickedName = (picked.name ?: "").trim().lowercase(Locale.getDefault())
 
-            // Case 1: user picked Projects folder directly
-            val rootName = (root.name ?: "").trim().lowercase()
-            if (rootName == "projects") return root
-
-            // Case 2: user picked AnI folder (or any folder that already contains Projects)
-            val existingProjects = root.findFile("Projects")
-            if (existingProjects != null && existingProjects.isDirectory) return existingProjects
-
-            // Case 3: user picked a container that contains AnI
-            val existingAni = root.findFile("AnI")
-            if (existingAni != null && existingAni.isDirectory) {
-                val p = existingAni.findFile("Projects")
-                if (p != null && p.isDirectory) return p
-                return if (createIfMissing) getOrCreateDir(existingAni, "Projects") else null
+            // If user picked "Projects" folder directly
+            if (pickedName == "projects") {
+                return picked
             }
 
-            // Case 4: create AnI/Projects under selected root
-            if (!createIfMissing) return null
-            val aniDir = getOrCreateDir(root, "AnI") ?: return null
-            return getOrCreateDir(aniDir, "Projects")
+            // Determine aniDir:
+            // - if user picked "AnI", aniDir = picked
+            // - else try find "AnI" inside picked (case-insensitive)
+            // - else create it (if allowed)
+            val aniDir: DocumentFile? = if (pickedName == "ani") {
+                picked
+            } else {
+                findChildDirIgnoreCase(picked, "AnI")
+                    ?: if (createIfMissing) picked.createDirectory("AnI") else null
+            } ?: return null
+
+            // Determine projectsDir:
+            // - if user picked a parent folder and aniDir exists, use aniDir/Projects
+            // - if aniDir itself is "Projects" (rare), handle above already
+            val projectsDir =
+                findChildDirIgnoreCase(aniDir, "Projects")
+                    ?: if (createIfMissing) aniDir.createDirectory("Projects") else null
+
+            return projectsDir
+        }
+
+        private fun findChildDirIgnoreCase(parent: DocumentFile, want: String): DocumentFile? {
+            val wantLower = want.lowercase(Locale.getDefault())
+            return parent.listFiles().firstOrNull {
+                it.isDirectory && ((it.name ?: "").lowercase(Locale.getDefault()) == wantLower)
+            }
         }
 
         private fun getOrCreateDir(parent: DocumentFile, name: String): DocumentFile? {
-            val existing = parent.findFile(name)
-            if (existing != null && existing.isDirectory) return existing
+            // Case-insensitive find first
+            val existing = findChildDirIgnoreCase(parent, name)
+            if (existing != null) return existing
             return try {
                 parent.createDirectory(name)
             } catch (_: Exception) {
@@ -236,7 +235,9 @@ class MainActivity : AppCompatActivity() {
 
         private fun writeTextFile(dir: DocumentFile, filename: String, text: String): Boolean {
             return try {
-                val existing = dir.findFile(filename)
+                val existing = dir.listFiles().firstOrNull {
+                    it.isFile && (it.name ?: "") == filename
+                }
                 val file = existing ?: dir.createFile("text/plain", filename)
                 if (file == null) return false
                 activity.contentResolver.openOutputStream(file.uri, "wt").use { os ->
