@@ -172,15 +172,36 @@ class MainActivity : AppCompatActivity() {
         // ---------- Internal helpers ----------
 
         private fun resolveProjectsDir(createIfMissing: Boolean): DocumentFile? {
-            val root = getVaultRoot() ?: return null
+            val uriStr = prefs.getString(KEY_VAULT_URI, null) ?: return null
+            val treeUri = Uri.parse(uriStr)
 
-            // Allow user to pick either:
-            // - AnI folder directly, OR
-            // - a parent folder (we will create/find AnI inside)
-            val ani = findOrCreateDir(root, "AnI", createIfMissing) ?: return null
-            val projects = findOrCreateDir(ani, "Projects", createIfMissing) ?: return null
-            return projects
+            var root = DocumentFile.fromTreeUri(this, treeUri) ?: return null
+
+            // If user selected the AnI folder itself, don't nest AnI/AnI
+            val rootName = (root.name ?: "").lowercase()
+
+            val aniDir: DocumentFile? = when (rootName) {
+                "ani" -> root
+                "projects" -> {
+                    // user selected Projects folder directly; treat its parent as "ani" container
+                    // but SAF may not expose parent; so treat Projects as projectsDir below
+                    root
+                }
+                else -> findOrCreateDir(root, "AnI", createIfMissing)
+            }
+
+            // If root is already Projects folder, use it; otherwise use aniDir/Projects
+            val projectsDir: DocumentFile? = when (rootName) {
+                "projects" -> root
+                else -> {
+                    aniDir ?: return null
+                    findOrCreateDir(aniDir, "Projects", createIfMissing)
+                }
+            }
+
+            return projectsDir
         }
+
 
         private fun getVaultRoot(): DocumentFile? {
             val uriStr = activity.prefs.getString(activity.KEY_VAULT_URI, null) ?: return null
