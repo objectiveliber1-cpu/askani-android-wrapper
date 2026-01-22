@@ -37,7 +37,6 @@ class MainActivity : AppCompatActivity() {
 
                 prefs.edit().putString(KEY_VAULT_URI, uri.toString()).apply()
 
-                // Let the web UI know
                 runOnUiThread {
                     webView.evaluateJavascript(
                         "window.__aniVaultAndroidUri = ${jsQuote(uri.toString())};" +
@@ -80,15 +79,13 @@ class MainActivity : AppCompatActivity() {
         s.allowContentAccess = true
         s.mediaPlaybackRequiresUserGesture = true
 
-        // Bridge exposed as BOTH AniAndroid and Android
         val bridge = AniBridge(this)
         webView.addJavascriptInterface(bridge, "AniAndroid")
         webView.addJavascriptInterface(bridge, "Android")
 
-        // Load your HF space (or whatever you already use)
         webView.loadUrl("https://objectiveliberty-ani.hf.space")
 
-        // Inject cached vault URI into page when ready (best-effort)
+        // Best-effort: expose saved uri early
         webView.postDelayed({
             val uri = prefs.getString(KEY_VAULT_URI, null)
             if (uri != null) {
@@ -111,17 +108,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun jsQuote(s: String): String {
-        // minimal JS string quoting
         val esc = s.replace("\\", "\\\\").replace("'", "\\'")
         return "'$esc'"
     }
 
     class AniBridge(private val activity: MainActivity) {
 
-        // ---------- Public JS API ----------
+        // --- Public JS API ---
 
         @JavascriptInterface
         fun pickVaultFolder(): String {
+            activity.runOnUiThread { activity.launchVaultPicker() }
+            return "Select your AnI vault folder…"
+        }
+
+        // Alias so ui.js can call requestVaultAccess() too
+        @JavascriptInterface
+        fun requestVaultAccess(): String {
             activity.runOnUiThread { activity.launchVaultPicker() }
             return "Select your AnI vault folder…"
         }
@@ -140,7 +143,6 @@ class MainActivity : AppCompatActivity() {
                 .filter { it.isDirectory }
                 .mapNotNull { it.name }
                 .sortedBy { it.lowercase() }
-
             for (name in children) out.put(name)
             return out.toString()
         }
@@ -153,7 +155,7 @@ class MainActivity : AppCompatActivity() {
             val htmlText = html ?: ""
 
             val projectsDir = resolveProjectsDir(createIfMissing = true)
-                ?: return "Vault not set. Use Bank options → Select Vault."
+                ?: return "Vault not set. Use ⚙ → Grant Vault Access."
 
             val projDir = getOrCreateDir(projectsDir, proj) ?: return "Vault write failed."
             val sessionsDir = getOrCreateDir(projDir, "Sessions") ?: return "Vault write failed."
@@ -162,23 +164,26 @@ class MainActivity : AppCompatActivity() {
             val ok1 = writeTextFile(sessionsDir, "$base.md", mdText)
             val ok2 = writeTextFile(exportsDir, "$base.html", htmlText)
 
-            return if (ok1 && ok2) {
-                "Saved ✓ (Projects/$proj/Sessions/$base.md)"
-            } else {
-                "Vault write failed."
-            }
+            return if (ok1 && ok2) "Saved ✓ (Projects/$proj/Sessions/$base.md)" else "Vault write failed."
         }
 
-        // ---------- Internal helpers ----------
+        // --- Internal helpers ---
 
         private fun resolveProjectsDir(createIfMissing: Boolean): DocumentFile? {
             val root = getVaultRoot() ?: return null
 
-            // Allow user to pick either:
-            // - AnI folder directly, OR
-            // - a parent folder (we will create/find AnI inside)
-            val ani = findOrCreateDir(root, "AnI", createIfMissing) ?: return null
-            val projects = findOrCreateDir(ani, "Projects", createIfMissing) ?: return null
+            // If user picked AnI directly
+            val rootName = (root.name ?: "").trim()
+            val aniRoot: DocumentFile = when {
+                rootName.equals("AnI", ignoreCase = true) -> root
+                else -> findOrCreateDir(root, "AnI", createIfMissing) ?: return null
+            }
+
+            // If user picked Projects directly (rare, but possible in some pickers)
+            val aniName = (aniRoot.name ?: "").trim()
+            if (aniName.equals("Projects", ignoreCase = true)) return aniRoot
+
+            val projects = findOrCreateDir(aniRoot, "Projects", createIfMissing) ?: return null
             return projects
         }
 
@@ -196,21 +201,13 @@ class MainActivity : AppCompatActivity() {
             val existing = parent.findFile(name)
             if (existing != null && existing.isDirectory) return existing
             if (!create) return null
-            return try {
-                parent.createDirectory(name)
-            } catch (_: Exception) {
-                null
-            }
+            return try { parent.createDirectory(name) } catch (_: Exception) { null }
         }
 
         private fun getOrCreateDir(parent: DocumentFile, name: String): DocumentFile? {
             val existing = parent.findFile(name)
             if (existing != null && existing.isDirectory) return existing
-            return try {
-                parent.createDirectory(name)
-            } catch (_: Exception) {
-                null
-            }
+            return try { parent.createDirectory(name) } catch (_: Exception) { null }
         }
 
         private fun writeTextFile(dir: DocumentFile, filename: String, text: String): Boolean {
