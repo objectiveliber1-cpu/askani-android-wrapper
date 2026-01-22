@@ -14,6 +14,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.documentfile.provider.DocumentFile
 import org.json.JSONArray
+import org.json.JSONObject
 import java.nio.charset.Charset
 
 class MainActivity : AppCompatActivity() {
@@ -30,14 +31,15 @@ class MainActivity : AppCompatActivity() {
         if (res.resultCode == RESULT_OK && uri != null) {
             try {
                 val flags = res.data?.flags ?: 0
-                val takeFlags = flags and
-                        (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
 
-                // Persist permission so it survives app restarts
+                // Some devices/flows do not return expected flags reliably.
+                // Persistable permission requires READ/WRITE flags.
+                val requested = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                val takeFlags = (flags and requested).let { if (it == 0) requested else it }
+
                 contentResolver.takePersistableUriPermission(uri, takeFlags)
                 prefs.edit().putString(KEY_VAULT_URI, uri.toString()).apply()
 
-                // Notify page (optional)
                 runOnUiThread {
                     webView.evaluateJavascript(
                         "window.__aniVaultAndroidUri = ${jsQuote(uri.toString())};" +
@@ -80,15 +82,13 @@ class MainActivity : AppCompatActivity() {
         s.allowContentAccess = true
         s.mediaPlaybackRequiresUserGesture = true
 
-        // Bridge exposed as BOTH AniAndroid and Android (compat)
         val bridge = AniBridge(this)
         webView.addJavascriptInterface(bridge, "AniAndroid")
         webView.addJavascriptInterface(bridge, "Android")
 
-        // Load HF Space
         webView.loadUrl("https://objectiveliberty-ani.hf.space")
 
-        // Best-effort: inject saved vault URI for UI diagnostics
+        // Inject saved vault URI for UI diagnostics
         webView.postDelayed({
             val uri = prefs.getString(KEY_VAULT_URI, null)
             if (!uri.isNullOrBlank()) {
@@ -128,6 +128,10 @@ class MainActivity : AppCompatActivity() {
             return if (uri.isNullOrBlank()) "Vault not set" else "Vault set ✓"
         }
 
+        /**
+         * Returns a JSON array string of project folder names.
+         * Always valid JSON, even when vault is missing/unreadable.
+         */
         @JavascriptInterface
         fun listProjects(): String {
             val projectsDir = resolveProjectsDir(createIfMissing = false) ?: return "[]"
@@ -136,10 +140,48 @@ class MainActivity : AppCompatActivity() {
             val children = projectsDir.listFiles()
                 .filter { it.isDirectory }
                 .mapNotNull { it.name }
+                .filter { it.isNotBlank() }
                 .sortedBy { it.lowercase() }
 
             for (name in children) out.put(name)
             return out.toString()
+        }
+
+        /**
+         * Debug helper: returns JSON object about vault resolution and scan results.
+         * Call from JS to see *exactly* what Android thinks the vault path is.
+         */
+        @JavascriptInterface
+        fun debugVault(): String {
+            val obj = JSONObject()
+            val uriStr = activity.prefs.getString(activity.KEY_VAULT_URI, null)
+
+            obj.put("savedUri", uriStr ?: JSONObject.NULL)
+
+            val root = uriStr?.let {
+                try { DocumentFile.fromTreeUri(activity, Uri.parse(it)) } catch (_: Exception) { null }
+            }
+
+            obj.put("rootName", root?.name ?: JSONObject.NULL)
+            obj.put("rootExists", root != null && root.exists())
+            obj.put("rootIsDir", root?.isDirectory ?: false)
+
+            val projectsDir = try { resolveProjectsDir(createIfMissing = false) } catch (_: Exception) { null }
+            obj.put("projectsDirName", projectsDir?.name ?: JSONObject.NULL)
+            obj.put("projectsDirExists", projectsDir != null && projectsDir.exists())
+
+            val projects = JSONArray()
+            if (projectsDir != null) {
+                val children = projectsDir.listFiles()
+                    .filter { it.isDirectory }
+                    .mapNotNull { it.name }
+                    .sortedBy { it.lowercase() }
+                for (name in children) projects.put(name)
+            }
+            obj.put("projects", projects)
+            obj.put("projectsCount", projects.length())
+
+            return obj.toString()
         }
 
         // New name (preferred by ui.py). Kept "bankToDownloads" compat below.
@@ -174,35 +216,60 @@ class MainActivity : AppCompatActivity() {
             return if (ok1 && ok2) "Saved ✓ (Projects/$proj/Sessions/$base.md)" else "Vault write failed."
         }
 
+        /**
+         * Stable vault resolution:
+         * - Prefer existing case-insensitive matches for "AnI" and "Projects"
+         * - Only create folders when createIfMissing=true
+         *
+         * Supports selecting:
+         *  - Projects folder directly
+         *  - AnI folder directly
+         *  - A parent that contains AnI (any case)
+         *  - A parent that contains Projects (any case)
+         */
         private fun resolveProjectsDir(createIfMissing: Boolean): DocumentFile? {
             val uriStr = activity.prefs.getString(activity.KEY_VAULT_URI, null) ?: return null
             val treeUri = Uri.parse(uriStr)
 
-            // IMPORTANT: use activity as context
             val root = DocumentFile.fromTreeUri(activity, treeUri) ?: return null
-            val rootName = (root.name ?: "").lowercase()
+            if (!root.exists() || !root.isDirectory) return null
 
-            // User might select:
-            //  - AnI folder
-            //  - Projects folder
-            //  - parent folder containing AnI
-            val projectsDir: DocumentFile? = when (rootName) {
-                "projects" -> root
-                "ani" -> findOrCreateDir(root, "Projects", createIfMissing)
-                else -> {
-                    val ani = findOrCreateDir(root, "AnI", createIfMissing) ?: return null
-                    findOrCreateDir(ani, "Projects", createIfMissing)
-                }
+            val rootNameLc = (root.name ?: "").lowercase()
+
+            // If user picked Projects directly
+            if (rootNameLc == "projects") return root
+
+            // Helper: find child dir by name case-insensitive
+            fun findChildDirCaseInsensitive(parent: DocumentFile, wantedLc: String): DocumentFile? {
+                return parent.listFiles()
+                    .firstOrNull { it.isDirectory && (it.name ?: "").lowercase() == wantedLc }
             }
 
-            return projectsDir
-        }
+            // Helper: find or create exact-name directory, but accept existing case-insensitive match
+            fun findOrCreateDirSmart(parent: DocumentFile, nameExact: String, wantedLc: String): DocumentFile? {
+                val existingCi = findChildDirCaseInsensitive(parent, wantedLc)
+                if (existingCi != null) return existingCi
+                if (!createIfMissing) return null
+                return try { parent.createDirectory(nameExact) } catch (_: Exception) { null }
+            }
 
-        private fun findOrCreateDir(parent: DocumentFile, name: String, create: Boolean): DocumentFile? {
-            val existing = parent.findFile(name)
-            if (existing != null && existing.isDirectory) return existing
-            if (!create) return null
-            return try { parent.createDirectory(name) } catch (_: Exception) { null }
+            // If user picked AnI directly
+            val aniDir: DocumentFile? = if (rootNameLc == "ani") {
+                root
+            } else {
+                // Prefer existing "AnI" child; else create when allowed
+                findOrCreateDirSmart(root, "AnI", "ani")
+            } ?: return null
+
+            // Under AnI, prefer existing Projects; else create when allowed
+            val projectsDir = findOrCreateDirSmart(aniDir, "Projects", "projects")
+            if (projectsDir != null) return projectsDir
+
+            // Additional fallback: user picked a parent that contains Projects directly (without AnI)
+            val projectsDirect = findChildDirCaseInsensitive(root, "projects")
+            if (projectsDirect != null) return projectsDirect
+
+            return null
         }
 
         private fun getOrCreateDir(parent: DocumentFile, name: String): DocumentFile? {
