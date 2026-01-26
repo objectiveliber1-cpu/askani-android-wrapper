@@ -15,6 +15,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.documentfile.provider.DocumentFile
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import java.nio.charset.Charset
 
 class MainActivity : AppCompatActivity() {
@@ -31,9 +33,10 @@ class MainActivity : AppCompatActivity() {
         if (res.resultCode == RESULT_OK && uri != null) {
             try {
                 val flags = res.data?.flags ?: 0
-                val requested = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                val takeFlags = (flags and requested).let { if (it == 0) requested else it }
+                val takeFlags = flags and
+                        (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
 
+                // Persist permission so it survives app restarts
                 contentResolver.takePersistableUriPermission(uri, takeFlags)
                 prefs.edit().putString(KEY_VAULT_URI, uri.toString()).apply()
 
@@ -79,12 +82,15 @@ class MainActivity : AppCompatActivity() {
         s.allowContentAccess = true
         s.mediaPlaybackRequiresUserGesture = true
 
+        // Bridge exposed as BOTH AniAndroid and Android (compat)
         val bridge = AniBridge(this)
         webView.addJavascriptInterface(bridge, "AniAndroid")
         webView.addJavascriptInterface(bridge, "Android")
 
+        // Load HF Space
         webView.loadUrl("https://objectiveliberty-ani.hf.space")
 
+        // Best-effort: inject saved vault URI for UI diagnostics
         webView.postDelayed({
             val uri = prefs.getString(KEY_VAULT_URI, null)
             if (!uri.isNullOrBlank()) {
@@ -110,6 +116,8 @@ class MainActivity : AppCompatActivity() {
 
     class AniBridge(private val activity: MainActivity) {
 
+        // ---------- JS API ----------
+
         @JavascriptInterface
         fun pickVaultFolder(): String {
             activity.runOnUiThread { activity.launchVaultPicker() }
@@ -122,6 +130,10 @@ class MainActivity : AppCompatActivity() {
             return if (uri.isNullOrBlank()) "Vault not set" else "Vault set ✓"
         }
 
+        /**
+         * Returns JSON array of project folder KEYS (lowercase-safe names),
+         * e.g. ["general","test-1",...]
+         */
         @JavascriptInterface
         fun listProjects(): String {
             val projectsDir = resolveProjectsDir(createIfMissing = false) ?: return "[]"
@@ -130,46 +142,70 @@ class MainActivity : AppCompatActivity() {
             val children = projectsDir.listFiles()
                 .filter { it.isDirectory }
                 .mapNotNull { it.name }
-                .filter { it.isNotBlank() }
                 .sortedBy { it.lowercase() }
 
             for (name in children) out.put(name)
             return out.toString()
         }
 
+        /**
+         * NEW: Returns JSON array of session objects for the given project key:
+         * [
+         *   {"name":"ani-general-20260125-120102.md","label":"ani-general-20260125-120102.md"},
+         *   ...
+         * ]
+         */
         @JavascriptInterface
-        fun debugVault(): String {
-            val obj = JSONObject()
-            val uriStr = activity.prefs.getString(activity.KEY_VAULT_URI, null)
+        fun listSessions(projectSafe: String?): String {
+            val proj = (projectSafe ?: "general").ifBlank { "general" }
+            val projectsDir = resolveProjectsDir(createIfMissing = false) ?: return "[]"
+            val projDir = projectsDir.findFile(proj)
+            if (projDir == null || !projDir.isDirectory) return "[]"
 
-            obj.put("savedUri", uriStr ?: JSONObject.NULL)
+            val sessionsDir = projDir.findFile("Sessions")
+            if (sessionsDir == null || !sessionsDir.isDirectory) return "[]"
 
-            val root = uriStr?.let {
-                try { DocumentFile.fromTreeUri(activity, Uri.parse(it)) } catch (_: Exception) { null }
+            val files = sessionsDir.listFiles()
+                .filter { it.isFile }
+                .mapNotNull { it.name }
+                .filter { it.lowercase().endsWith(".md") }
+                // simple: newest-ish by filename if timestamped; otherwise alphabetical desc
+                .sortedDescending()
+
+            val out = JSONArray()
+            for (name in files) {
+                val obj = JSONObject()
+                obj.put("name", name)
+                obj.put("label", name)
+                out.put(obj)
             }
-
-            obj.put("rootName", root?.name ?: JSONObject.NULL)
-            obj.put("rootExists", root != null && root.exists())
-            obj.put("rootIsDir", root?.isDirectory ?: false)
-
-            val projectsDir = try { resolveProjectsDir(createIfMissing = false) } catch (_: Exception) { null }
-            obj.put("projectsDirName", projectsDir?.name ?: JSONObject.NULL)
-            obj.put("projectsDirExists", projectsDir != null && projectsDir.exists())
-
-            val projects = JSONArray()
-            if (projectsDir != null) {
-                val children = projectsDir.listFiles()
-                    .filter { it.isDirectory }
-                    .mapNotNull { it.name }
-                    .sortedBy { it.lowercase() }
-                for (name in children) projects.put(name)
-            }
-            obj.put("projects", projects)
-            obj.put("projectsCount", projects.length())
-
-            return obj.toString()
+            return out.toString()
         }
 
+        /**
+         * NEW: Returns the markdown content of the selected session file.
+         * If missing/unreadable: empty string.
+         */
+        @JavascriptInterface
+        fun readSession(projectSafe: String?, filename: String?): String {
+            val proj = (projectSafe ?: "general").ifBlank { "general" }
+            val fn = (filename ?: "").trim()
+            if (fn.isBlank()) return ""
+
+            val projectsDir = resolveProjectsDir(createIfMissing = false) ?: return ""
+            val projDir = projectsDir.findFile(proj)
+            if (projDir == null || !projDir.isDirectory) return ""
+
+            val sessionsDir = projDir.findFile("Sessions")
+            if (sessionsDir == null || !sessionsDir.isDirectory) return ""
+
+            val file = sessionsDir.findFile(fn)
+            if (file == null || !file.isFile) return ""
+
+            return readTextFile(file.uri)
+        }
+
+        // New name (preferred by ui.py). Kept "bankToDownloads" compat below.
         @JavascriptInterface
         fun bankToVault(md: String?, html: String?, baseName: String?, projectSafe: String?): String {
             return bankInternal(md, html, baseName, projectSafe)
@@ -179,6 +215,8 @@ class MainActivity : AppCompatActivity() {
         fun bankToDownloads(md: String?, html: String?, baseName: String?, projectSafe: String?): String {
             return bankInternal(md, html, baseName, projectSafe)
         }
+
+        // ---------- Internal ----------
 
         private fun bankInternal(md: String?, html: String?, baseName: String?, projectSafe: String?): String {
             val proj = (projectSafe ?: "General").ifBlank { "General" }
@@ -203,39 +241,31 @@ class MainActivity : AppCompatActivity() {
             val uriStr = activity.prefs.getString(activity.KEY_VAULT_URI, null) ?: return null
             val treeUri = Uri.parse(uriStr)
 
+            // IMPORTANT: use activity as context
             val root = DocumentFile.fromTreeUri(activity, treeUri) ?: return null
-            if (!root.exists() || !root.isDirectory) return null
+            val rootName = (root.name ?: "").lowercase()
 
-            val rootNameLc = (root.name ?: "").lowercase()
-
-            if (rootNameLc == "projects") return root
-
-            fun findChildDirCaseInsensitive(parent: DocumentFile, wantedLc: String): DocumentFile? {
-                return parent.listFiles()
-                    .firstOrNull { it.isDirectory && (it.name ?: "").lowercase() == wantedLc }
+            // User might select:
+            //  - AnI folder
+            //  - Projects folder
+            //  - parent folder containing AnI
+            val projectsDir: DocumentFile? = when (rootName) {
+                "projects" -> root
+                "ani" -> findOrCreateDir(root, "Projects", createIfMissing)
+                else -> {
+                    val ani = findOrCreateDir(root, "AnI", createIfMissing) ?: return null
+                    findOrCreateDir(ani, "Projects", createIfMissing)
+                }
             }
 
-            fun findOrCreateDirSmart(parent: DocumentFile, nameExact: String, wantedLc: String): DocumentFile? {
-                val existingCi = findChildDirCaseInsensitive(parent, wantedLc)
-                if (existingCi != null) return existingCi
-                if (!createIfMissing) return null
-                return try { parent.createDirectory(nameExact) } catch (_: Exception) { null }
-            }
+            return projectsDir
+        }
 
-            // ✅ FIX: aniDir is now non-null at the type level
-            val aniDir = (if (rootNameLc == "ani") {
-                root
-            } else {
-                findOrCreateDirSmart(root, "AnI", "ani")
-            }) ?: return null
-
-            val projectsDir = findOrCreateDirSmart(aniDir, "Projects", "projects")
-            if (projectsDir != null) return projectsDir
-
-            val projectsDirect = findChildDirCaseInsensitive(root, "projects")
-            if (projectsDirect != null) return projectsDirect
-
-            return null
+        private fun findOrCreateDir(parent: DocumentFile, name: String, create: Boolean): DocumentFile? {
+            val existing = parent.findFile(name)
+            if (existing != null && existing.isDirectory) return existing
+            if (!create) return null
+            return try { parent.createDirectory(name) } catch (_: Exception) { null }
         }
 
         private fun getOrCreateDir(parent: DocumentFile, name: String): DocumentFile? {
@@ -257,6 +287,26 @@ class MainActivity : AppCompatActivity() {
                 true
             } catch (_: Exception) {
                 false
+            }
+        }
+
+        private fun readTextFile(uri: Uri): String {
+            return try {
+                activity.contentResolver.openInputStream(uri).use { input ->
+                    if (input == null) return ""
+                    BufferedReader(InputStreamReader(input, Charset.forName("UTF-8"))).use { br ->
+                        val sb = StringBuilder()
+                        var line: String?
+                        while (true) {
+                            line = br.readLine()
+                            if (line == null) break
+                            sb.append(line).append("\n")
+                        }
+                        sb.toString()
+                    }
+                }
+            } catch (_: Exception) {
+                ""
             }
         }
     }
