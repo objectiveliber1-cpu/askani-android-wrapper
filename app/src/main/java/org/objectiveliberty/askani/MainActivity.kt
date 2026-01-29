@@ -12,7 +12,6 @@ import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.documentfile.provider.DocumentFile
@@ -119,21 +118,17 @@ class MainActivity : AppCompatActivity() {
 
     class AniBridge(private val activity: MainActivity) {
 
-        // ---------- Clipboard (for Copy button) ----------
-
+        // ---------- Clipboard ----------
+        // This is what ui.py's VAULT_JS expects: return "copied" on success.
         @JavascriptInterface
         fun copyToClipboard(text: String?): String {
-            val t = (text ?: "").trim()
-            if (t.isBlank()) return "copy-failed"
-
             return try {
-                val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                cm.setPrimaryClip(ClipData.newPlainText("AnI", t))
+                val t = (text ?: "").toString()
+                if (t.isBlank()) return "copy-failed"
 
-                activity.runOnUiThread {
-                    // tiny toast so user knows it worked; remove if you hate it
-                    Toast.makeText(activity, "Copied", Toast.LENGTH_SHORT).show()
-                }
+                val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val clip = ClipData.newPlainText("AnI", t)
+                cm.setPrimaryClip(clip)
                 "copied"
             } catch (_: Exception) {
                 "copy-failed"
@@ -173,7 +168,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         /**
-         * Returns JSON array of session objects for the given project key.
+         * Returns JSON array of session objects for the given project key:
+         * [
+         *   {"name":"ani-general-20260125-120102.md","label":"ani-general-20260125-120102.md"},
+         *   ...
+         * ]
          */
         @JavascriptInterface
         fun listSessions(projectSafe: String?): String {
@@ -189,6 +188,7 @@ class MainActivity : AppCompatActivity() {
                 .filter { it.isFile }
                 .mapNotNull { it.name }
                 .filter { it.lowercase().endsWith(".md") }
+                // simple: newest-ish by filename if timestamped; otherwise alphabetical desc
                 .sortedDescending()
 
             val out = JSONArray()
@@ -203,6 +203,7 @@ class MainActivity : AppCompatActivity() {
 
         /**
          * Returns the markdown content of the selected session file.
+         * If missing/unreadable: empty string.
          */
         @JavascriptInterface
         fun readSession(projectSafe: String?, filename: String?): String {
@@ -223,7 +224,7 @@ class MainActivity : AppCompatActivity() {
             return readTextFile(file.uri)
         }
 
-        // Preferred name (ui.py). Kept "bankToDownloads" compat below.
+        // New name (preferred by ui.py). Kept "bankToDownloads" compat below.
         @JavascriptInterface
         fun bankToVault(md: String?, html: String?, baseName: String?, projectSafe: String?): String {
             return bankInternal(md, html, baseName, projectSafe)
@@ -259,6 +260,7 @@ class MainActivity : AppCompatActivity() {
             val uriStr = activity.prefs.getString(activity.KEY_VAULT_URI, null) ?: return null
             val treeUri = Uri.parse(uriStr)
 
+            // IMPORTANT: use activity as context
             val root = DocumentFile.fromTreeUri(activity, treeUri) ?: return null
             val rootName = (root.name ?: "").lowercase()
 
