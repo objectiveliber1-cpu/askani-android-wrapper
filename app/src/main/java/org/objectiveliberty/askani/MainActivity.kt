@@ -1,6 +1,8 @@
 package org.objectiveliberty.askani
 
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -10,6 +12,7 @@ import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.documentfile.provider.DocumentFile
@@ -116,6 +119,27 @@ class MainActivity : AppCompatActivity() {
 
     class AniBridge(private val activity: MainActivity) {
 
+        // ---------- Clipboard (for Copy button) ----------
+
+        @JavascriptInterface
+        fun copyToClipboard(text: String?): String {
+            val t = (text ?: "").trim()
+            if (t.isBlank()) return "copy-failed"
+
+            return try {
+                val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("AnI", t))
+
+                activity.runOnUiThread {
+                    // tiny toast so user knows it worked; remove if you hate it
+                    Toast.makeText(activity, "Copied", Toast.LENGTH_SHORT).show()
+                }
+                "copied"
+            } catch (_: Exception) {
+                "copy-failed"
+            }
+        }
+
         // ---------- JS API ----------
 
         @JavascriptInterface
@@ -149,11 +173,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         /**
-         * NEW: Returns JSON array of session objects for the given project key:
-         * [
-         *   {"name":"ani-general-20260125-120102.md","label":"ani-general-20260125-120102.md"},
-         *   ...
-         * ]
+         * Returns JSON array of session objects for the given project key.
          */
         @JavascriptInterface
         fun listSessions(projectSafe: String?): String {
@@ -169,7 +189,6 @@ class MainActivity : AppCompatActivity() {
                 .filter { it.isFile }
                 .mapNotNull { it.name }
                 .filter { it.lowercase().endsWith(".md") }
-                // simple: newest-ish by filename if timestamped; otherwise alphabetical desc
                 .sortedDescending()
 
             val out = JSONArray()
@@ -183,8 +202,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         /**
-         * NEW: Returns the markdown content of the selected session file.
-         * If missing/unreadable: empty string.
+         * Returns the markdown content of the selected session file.
          */
         @JavascriptInterface
         fun readSession(projectSafe: String?, filename: String?): String {
@@ -205,7 +223,7 @@ class MainActivity : AppCompatActivity() {
             return readTextFile(file.uri)
         }
 
-        // New name (preferred by ui.py). Kept "bankToDownloads" compat below.
+        // Preferred name (ui.py). Kept "bankToDownloads" compat below.
         @JavascriptInterface
         fun bankToVault(md: String?, html: String?, baseName: String?, projectSafe: String?): String {
             return bankInternal(md, html, baseName, projectSafe)
@@ -241,7 +259,6 @@ class MainActivity : AppCompatActivity() {
             val uriStr = activity.prefs.getString(activity.KEY_VAULT_URI, null) ?: return null
             val treeUri = Uri.parse(uriStr)
 
-            // IMPORTANT: use activity as context
             val root = DocumentFile.fromTreeUri(activity, treeUri) ?: return null
             val rootName = (root.name ?: "").lowercase()
 
@@ -296,10 +313,8 @@ class MainActivity : AppCompatActivity() {
                     if (input == null) return ""
                     BufferedReader(InputStreamReader(input, Charset.forName("UTF-8"))).use { br ->
                         val sb = StringBuilder()
-                        var line: String?
                         while (true) {
-                            line = br.readLine()
-                            if (line == null) break
+                            val line = br.readLine() ?: break
                             sb.append(line).append("\n")
                         }
                         sb.toString()
