@@ -7,8 +7,10 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Message
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -27,6 +29,26 @@ class MainActivity : AppCompatActivity() {
 
     private val prefs by lazy { getSharedPreferences("ani_prefs", Context.MODE_PRIVATE) }
     private val KEY_VAULT_URI = "vault_tree_uri"
+
+    // --- Configure your Space URL here ---
+    private val HOME_URL = "https://objectiveliberty-ani.hf.space"
+
+    // Allowlist: keep WebView from escaping to chatgpt.com / random links
+    private val ALLOWED_HOSTS = setOf(
+        "objectiveliberty-ani.hf.space",
+        "huggingface.co",
+        "hf.space"
+    )
+
+    private fun isAllowed(url: String): Boolean {
+        return try {
+            val uri = Uri.parse(url)
+            val host = (uri.host ?: "").lowercase()
+            host in ALLOWED_HOSTS || ALLOWED_HOSTS.any { host.endsWith(".$it") }
+        } catch (_: Exception) {
+            false
+        }
+    }
 
     private val pickVaultTree = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -75,8 +97,34 @@ class MainActivity : AppCompatActivity() {
         webView = WebView(this)
         setContentView(webView)
 
-        webView.webViewClient = WebViewClient()
-        webView.webChromeClient = WebChromeClient()
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                val url = request?.url?.toString() ?: return false
+                // Allowlist keeps us in-app; block everything else to prevent “jump to ChatGPT”
+                return !isAllowed(url)
+            }
+
+            // Backward compat (older Android)
+            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                val u = url ?: return false
+                return !isAllowed(u)
+            }
+        }
+
+        webView.webChromeClient = object : WebChromeClient() {
+            // Prevent target=_blank / new window from escaping to external browser/app
+            override fun onCreateWindow(
+                view: WebView?,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: Message?
+            ): Boolean {
+                val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
+                transport.webView = view
+                resultMsg.sendToTarget()
+                return true
+            }
+        }
 
         val s: WebSettings = webView.settings
         s.javaScriptEnabled = true
@@ -84,6 +132,7 @@ class MainActivity : AppCompatActivity() {
         s.allowFileAccess = false
         s.allowContentAccess = true
         s.mediaPlaybackRequiresUserGesture = true
+        s.setSupportMultipleWindows(false)
 
         // Bridge exposed as BOTH AniAndroid and Android (compat)
         val bridge = AniBridge(this)
@@ -93,8 +142,8 @@ class MainActivity : AppCompatActivity() {
             bridge.ensureProject("general")
         }
 
-        // Load shared chat session
-        webView.loadUrl("https://chatgpt.com/s/t_697baf779294819197f0b7386f9e43a7")
+        // ✅ Load AnI (not ChatGPT)
+        webView.loadUrl(HOME_URL)
 
         // Best-effort: inject saved vault URI for UI diagnostics
         webView.postDelayed({
@@ -123,7 +172,6 @@ class MainActivity : AppCompatActivity() {
     class AniBridge(private val activity: MainActivity) {
 
         // ---------- Clipboard ----------
-        // This is what ui.py's VAULT_JS expects: return "copied" on success.
         @JavascriptInterface
         fun copyToClipboard(text: String?): String {
             return try {
@@ -153,10 +201,6 @@ class MainActivity : AppCompatActivity() {
             return if (uri.isNullOrBlank()) "Vault not set" else "Vault set ✓"
         }
 
-        /**
-         * Returns JSON array of project folder KEYS (lowercase-safe names),
-         * e.g. ["general","test-1",...]
-         */
         @JavascriptInterface
         fun listProjects(): String {
             val projectsDir = resolveProjectsDir(createIfMissing = false) ?: return "[]"
@@ -171,13 +215,6 @@ class MainActivity : AppCompatActivity() {
             return out.toString()
         }
 
-        /**
-         * Returns JSON array of session objects for the given project key:
-         * [
-         *   {"name":"ani-general-20260125-120102.md","label":"ani-general-20260125-120102.md"},
-         *   ...
-         * ]
-         */
         @JavascriptInterface
         fun listSessions(projectSafe: String?): String {
             val proj = (projectSafe ?: "general").ifBlank { "general" }
@@ -192,7 +229,6 @@ class MainActivity : AppCompatActivity() {
                 .filter { it.isFile }
                 .mapNotNull { it.name }
                 .filter { it.lowercase().endsWith(".md") }
-                // simple: newest-ish by filename if timestamped; otherwise alphabetical desc
                 .sortedDescending()
 
             val out = JSONArray()
@@ -205,10 +241,6 @@ class MainActivity : AppCompatActivity() {
             return out.toString()
         }
 
-        /**
-         * Ensure the given project folder exists in the vault.
-         * Returns "ok" on success or an error string.
-         */
         @JavascriptInterface
         fun ensureProject(projectKey: String?): String {
             return try {
@@ -221,10 +253,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        /**
-         * Returns the markdown content of the selected session file.
-         * If missing/unreadable: empty string.
-         */
         @JavascriptInterface
         fun readSession(projectSafe: String?, filename: String?): String {
             val proj = (projectSafe ?: "general").ifBlank { "general" }
@@ -244,7 +272,6 @@ class MainActivity : AppCompatActivity() {
             return readTextFile(file.uri)
         }
 
-        // New name (preferred by ui.py). Kept "bankToDownloads" compat below.
         @JavascriptInterface
         fun bankToVault(md: String?, html: String?, baseName: String?, projectSafe: String?): String {
             return bankInternal(md, html, baseName, projectSafe)
@@ -280,14 +307,9 @@ class MainActivity : AppCompatActivity() {
             val uriStr = activity.prefs.getString(activity.KEY_VAULT_URI, null) ?: return null
             val treeUri = Uri.parse(uriStr)
 
-            // IMPORTANT: use activity as context
             val root = DocumentFile.fromTreeUri(activity, treeUri) ?: return null
             val rootName = (root.name ?: "").lowercase()
 
-            // User might select:
-            //  - AnI folder
-            //  - Projects folder
-            //  - parent folder containing AnI
             val projectsDir: DocumentFile? = when (rootName) {
                 "projects" -> root
                 "ani" -> findOrCreateDir(root, "Projects", createIfMissing)
