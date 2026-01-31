@@ -28,6 +28,9 @@ class MainActivity : AppCompatActivity() {
     private val prefs by lazy { getSharedPreferences("ani_prefs", Context.MODE_PRIVATE) }
     private val KEY_VAULT_URI = "vault_tree_uri"
 
+    // Keep ONE bridge instance so picker callback can reuse it cleanly.
+    private lateinit var bridge: AniBridge
+
     private val pickVaultTree = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { res ->
@@ -41,6 +44,9 @@ class MainActivity : AppCompatActivity() {
                 // Persist permission so it survives app restarts
                 contentResolver.takePersistableUriPermission(uri, takeFlags)
                 prefs.edit().putString(KEY_VAULT_URI, uri.toString()).apply()
+
+                // Ensure "general" exists immediately after vault selection
+                bridge.ensureProject("general")
 
                 runOnUiThread {
                     webView.evaluateJavascript(
@@ -85,11 +91,17 @@ class MainActivity : AppCompatActivity() {
         s.mediaPlaybackRequiresUserGesture = true
 
         // Bridge exposed as BOTH AniAndroid and Android (compat)
-        val bridge = AniBridge(this)
+        bridge = AniBridge(this)
         webView.addJavascriptInterface(bridge, "AniAndroid")
         webView.addJavascriptInterface(bridge, "Android")
 
-        // Load HF Space
+        // If a vault was already granted previously, ensure General exists on startup
+        val existingVault = prefs.getString(KEY_VAULT_URI, null)
+        if (!existingVault.isNullOrBlank()) {
+            bridge.ensureProject("general")
+        }
+
+        // Load HF Space (ONLY this URL)
         webView.loadUrl("https://objectiveliberty-ani.hf.space")
 
         // Best-effort: inject saved vault URI for UI diagnostics
@@ -119,7 +131,7 @@ class MainActivity : AppCompatActivity() {
     class AniBridge(private val activity: MainActivity) {
 
         // ---------- Clipboard ----------
-        // This is what ui.py's VAULT_JS expects: return "copied" on success.
+        // ui.py's VAULT_JS expects: return "copied" on success.
         @JavascriptInterface
         fun copyToClipboard(text: String?): String {
             return try {
@@ -150,8 +162,37 @@ class MainActivity : AppCompatActivity() {
         }
 
         /**
+         * Ensure the given project folder exists in the vault.
+         * Returns "ok" on success, or "NO_VAULT", or "ERR:<message>".
+         *
+         * This is what ui.py expects for "Create project" to actually create a folder.
+         */
+        @JavascriptInterface
+        fun ensureProject(projectKey: String?): String {
+            return try {
+                val proj = sanitizeKey(projectKey)
+                val projectsDir = resolveProjectsDir(createIfMissing = true) ?: return "NO_VAULT"
+                val projDir = getOrCreateDir(projectsDir, proj) ?: return "ERR:Vault write failed"
+                // Optional: create standard subfolders so everything is ready
+                getOrCreateDir(projDir, "Sessions")
+                getOrCreateDir(projDir, "Exports")
+                if (projDir.isDirectory) "ok" else "ERR:Vault write failed"
+            } catch (e: Exception) {
+                "ERR:${e.message}"
+            }
+        }
+
+        /**
+         * Optional alias: some JS tries createProject()
+         */
+        @JavascriptInterface
+        fun createProject(projectKey: String?): String {
+            return ensureProject(projectKey)
+        }
+
+        /**
          * Returns JSON array of project folder KEYS (lowercase-safe names),
-         * e.g. ["general","test-1",...]
+         * e.g. ["general","ruminations",...]
          */
         @JavascriptInterface
         fun listProjects(): String {
@@ -176,7 +217,7 @@ class MainActivity : AppCompatActivity() {
          */
         @JavascriptInterface
         fun listSessions(projectSafe: String?): String {
-            val proj = (projectSafe ?: "general").ifBlank { "general" }
+            val proj = sanitizeKey(projectSafe)
             val projectsDir = resolveProjectsDir(createIfMissing = false) ?: return "[]"
             val projDir = projectsDir.findFile(proj)
             if (projDir == null || !projDir.isDirectory) return "[]"
@@ -188,7 +229,6 @@ class MainActivity : AppCompatActivity() {
                 .filter { it.isFile }
                 .mapNotNull { it.name }
                 .filter { it.lowercase().endsWith(".md") }
-                // simple: newest-ish by filename if timestamped; otherwise alphabetical desc
                 .sortedDescending()
 
             val out = JSONArray()
@@ -207,7 +247,7 @@ class MainActivity : AppCompatActivity() {
          */
         @JavascriptInterface
         fun readSession(projectSafe: String?, filename: String?): String {
-            val proj = (projectSafe ?: "general").ifBlank { "general" }
+            val proj = sanitizeKey(projectSafe)
             val fn = (filename ?: "").trim()
             if (fn.isBlank()) return ""
 
@@ -238,7 +278,8 @@ class MainActivity : AppCompatActivity() {
         // ---------- Internal ----------
 
         private fun bankInternal(md: String?, html: String?, baseName: String?, projectSafe: String?): String {
-            val proj = (projectSafe ?: "General").ifBlank { "General" }
+            // IMPORTANT: projectSafe is expected to be a KEY from JS (already sanitized)
+            val proj = sanitizeKey(projectSafe)
             val base = (baseName ?: "ani-session").ifBlank { "ani-session" }
             val mdText = md ?: ""
             val htmlText = html ?: ""
@@ -260,7 +301,6 @@ class MainActivity : AppCompatActivity() {
             val uriStr = activity.prefs.getString(activity.KEY_VAULT_URI, null) ?: return null
             val treeUri = Uri.parse(uriStr)
 
-            // IMPORTANT: use activity as context
             val root = DocumentFile.fromTreeUri(activity, treeUri) ?: return null
             val rootName = (root.name ?: "").lowercase()
 
@@ -325,6 +365,18 @@ class MainActivity : AppCompatActivity() {
             } catch (_: Exception) {
                 ""
             }
+        }
+
+        private fun sanitizeKey(projectKey: String?): String {
+            val raw = (projectKey ?: "").trim()
+            if (raw.isBlank()) return "general"
+            // keep it conservative; JS already sanitizes, but don't allow surprises
+            val lowered = raw.lowercase()
+            val cleaned = lowered
+                .replace(Regex("[^a-z0-9._-]+"), "-")
+                .replace(Regex("-+"), "-")
+                .trim('-')
+            return if (cleaned.isBlank()) "general" else cleaned
         }
     }
 }
