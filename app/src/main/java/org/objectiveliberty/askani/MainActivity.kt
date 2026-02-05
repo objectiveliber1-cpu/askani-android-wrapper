@@ -8,6 +8,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Message
+import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -53,6 +54,8 @@ class MainActivity : AppCompatActivity() {
     private val pickVaultTree = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { res ->
+        Log.d("AnI", "Vault picker result: resultCode=${res.resultCode}, data=${res.data}")
+        
         val uri = res.data?.data
         if (res.resultCode == RESULT_OK && uri != null) {
             try {
@@ -63,6 +66,10 @@ class MainActivity : AppCompatActivity() {
                 // Persist permission so it survives app restarts
                 contentResolver.takePersistableUriPermission(uri, takeFlags)
                 prefs.edit().putString(KEY_VAULT_URI, uri.toString()).apply()
+                
+                Log.d("AnI", "Vault URI saved: $uri")
+                
+                // Ensure "general" project exists
                 AniBridge(this).ensureProject("general")
 
                 runOnUiThread {
@@ -72,7 +79,8 @@ class MainActivity : AppCompatActivity() {
                         null
                     )
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.e("AnI", "Failed to save vault URI", e)
                 runOnUiThread {
                     webView.evaluateJavascript(
                         "if (window.aniOnVaultReady) window.aniOnVaultReady(false);",
@@ -81,6 +89,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         } else {
+            Log.w("AnI", "Vault picker cancelled or failed")
             runOnUiThread {
                 webView.evaluateJavascript(
                     "if (window.aniOnVaultReady) window.aniOnVaultReady(false);",
@@ -100,7 +109,7 @@ class MainActivity : AppCompatActivity() {
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 val url = request?.url?.toString() ?: return false
-                // Allowlist keeps us in-app; block everything else to prevent “jump to ChatGPT”
+                // Allowlist keeps us in-app; block everything else to prevent "jump to ChatGPT"
                 return !isAllowed(url)
             }
 
@@ -138,6 +147,8 @@ class MainActivity : AppCompatActivity() {
         val bridge = AniBridge(this)
         webView.addJavascriptInterface(bridge, "AniAndroid")
         webView.addJavascriptInterface(bridge, "Android")
+        
+        // Ensure "general" project if vault already set
         if (!prefs.getString(KEY_VAULT_URI, null).isNullOrBlank()) {
             bridge.ensureProject("general")
         }
@@ -155,13 +166,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun launchVaultPicker() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-            addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+        Log.d("AnI", "launchVaultPicker called")
+        try {
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+            }
+            pickVaultTree.launch(intent)
+            Log.d("AnI", "Vault picker intent launched")
+        } catch (e: Exception) {
+            Log.e("AnI", "Failed to launch vault picker", e)
         }
-        pickVaultTree.launch(intent)
     }
 
     private fun jsQuote(s: String): String {
@@ -191,8 +208,11 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun pickVaultFolder(): String {
-            activity.runOnUiThread { activity.launchVaultPicker() }
-            return "Select your AnI vault folder…"
+            Log.d("AnI", "pickVaultFolder called from JS")
+            activity.runOnUiThread { 
+                activity.launchVaultPicker() 
+            }
+            return "Opening folder picker..."
         }
 
         @JavascriptInterface
@@ -203,7 +223,13 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun listProjects(): String {
-            val projectsDir = resolveProjectsDir(createIfMissing = false) ?: return "[]"
+            Log.d("AnI", "listProjects called")
+            val projectsDir = resolveProjectsDir(createIfMissing = false)
+            if (projectsDir == null) {
+                Log.w("AnI", "listProjects: projectsDir is null")
+                return "[]"
+            }
+            
             val out = JSONArray()
 
             val children = projectsDir.listFiles()
@@ -211,6 +237,8 @@ class MainActivity : AppCompatActivity() {
                 .mapNotNull { it.name }
                 .sortedBy { it.lowercase() }
 
+            Log.d("AnI", "Found ${children.size} project folders: $children")
+            
             for (name in children) out.put(name)
             return out.toString()
         }
@@ -218,6 +246,8 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun listSessions(projectSafe: String?): String {
             val proj = (projectSafe ?: "general").ifBlank { "general" }
+            Log.d("AnI", "listSessions called for project: $proj")
+            
             val projectsDir = resolveProjectsDir(createIfMissing = false) ?: return "[]"
             val projDir = projectsDir.findFile(proj)
             if (projDir == null || !projDir.isDirectory) return "[]"
@@ -238,6 +268,8 @@ class MainActivity : AppCompatActivity() {
                 obj.put("label", name)
                 out.put(obj)
             }
+            
+            Log.d("AnI", "Found ${files.size} sessions in $proj")
             return out.toString()
         }
 
@@ -245,10 +277,28 @@ class MainActivity : AppCompatActivity() {
         fun ensureProject(projectKey: String?): String {
             return try {
                 val proj = (projectKey ?: "general").ifBlank { "general" }
-                val projectsDir = resolveProjectsDir(createIfMissing = true) ?: return "NO_VAULT"
-                val projDir = getOrCreateDir(projectsDir, proj) ?: return "ERR:Vault write failed."
-                if (projDir.isDirectory) "ok" else "ERR:Vault write failed."
+                Log.d("AnI", "ensureProject called for: $proj")
+                
+                val projectsDir = resolveProjectsDir(createIfMissing = true)
+                if (projectsDir == null) {
+                    Log.e("AnI", "ensureProject: vault not accessible")
+                    return "NO_VAULT"
+                }
+                
+                val projDir = getOrCreateDir(projectsDir, proj)
+                if (projDir == null) {
+                    Log.e("AnI", "ensureProject: failed to create project dir")
+                    return "ERR:Vault write failed."
+                }
+                
+                if (projDir.isDirectory) {
+                    Log.d("AnI", "ensureProject: success for $proj")
+                    "ok"
+                } else {
+                    "ERR:Vault write failed."
+                }
             } catch (e: Exception) {
+                Log.e("AnI", "ensureProject error", e)
                 "ERR:${e.message}"
             }
         }
@@ -290,6 +340,8 @@ class MainActivity : AppCompatActivity() {
             val mdText = md ?: ""
             val htmlText = html ?: ""
 
+            Log.d("AnI", "bankInternal: project=$proj, base=$base")
+
             val projectsDir = resolveProjectsDir(createIfMissing = true)
                 ?: return "Vault not set. Tap Grant Vault Access."
 
@@ -300,15 +352,29 @@ class MainActivity : AppCompatActivity() {
             val ok1 = writeTextFile(sessionsDir, "$base.md", mdText, "text/markdown")
             val ok2 = writeTextFile(exportsDir, "$base.html", htmlText, "text/html")
 
+            Log.d("AnI", "bankInternal: md=$ok1, html=$ok2")
+
             return if (ok1 && ok2) "Saved ✓ (Projects/$proj/Sessions/$base.md)" else "Vault write failed."
         }
 
         private fun resolveProjectsDir(createIfMissing: Boolean): DocumentFile? {
-            val uriStr = activity.prefs.getString(activity.KEY_VAULT_URI, null) ?: return null
+            val uriStr = activity.prefs.getString(activity.KEY_VAULT_URI, null)
+            if (uriStr.isNullOrBlank()) {
+                Log.w("AnI", "resolveProjectsDir: no vault URI set")
+                return null
+            }
+            
             val treeUri = Uri.parse(uriStr)
+            Log.d("AnI", "resolveProjectsDir: vault URI = $uriStr")
 
-            val root = DocumentFile.fromTreeUri(activity, treeUri) ?: return null
+            val root = DocumentFile.fromTreeUri(activity, treeUri)
+            if (root == null) {
+                Log.e("AnI", "resolveProjectsDir: DocumentFile.fromTreeUri returned null")
+                return null
+            }
+            
             val rootName = (root.name ?: "").lowercase()
+            Log.d("AnI", "resolveProjectsDir: root folder name = $rootName")
 
             val projectsDir: DocumentFile? = when (rootName) {
                 "projects" -> root
@@ -326,13 +392,23 @@ class MainActivity : AppCompatActivity() {
             val existing = parent.findFile(name)
             if (existing != null && existing.isDirectory) return existing
             if (!create) return null
-            return try { parent.createDirectory(name) } catch (_: Exception) { null }
+            return try { 
+                parent.createDirectory(name)
+            } catch (e: Exception) { 
+                Log.e("AnI", "Failed to create directory: $name", e)
+                null 
+            }
         }
 
         private fun getOrCreateDir(parent: DocumentFile, name: String): DocumentFile? {
             val existing = parent.findFile(name)
             if (existing != null && existing.isDirectory) return existing
-            return try { parent.createDirectory(name) } catch (_: Exception) { null }
+            return try { 
+                parent.createDirectory(name)
+            } catch (e: Exception) { 
+                Log.e("AnI", "Failed to create directory: $name", e)
+                null 
+            }
         }
 
         private fun writeTextFile(dir: DocumentFile, filename: String, text: String, mime: String): Boolean {
@@ -346,7 +422,8 @@ class MainActivity : AppCompatActivity() {
                     os.flush()
                 }
                 true
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.e("AnI", "Failed to write file: $filename", e)
                 false
             }
         }
@@ -364,7 +441,8 @@ class MainActivity : AppCompatActivity() {
                         sb.toString()
                     }
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.e("AnI", "Failed to read file", e)
                 ""
             }
         }
