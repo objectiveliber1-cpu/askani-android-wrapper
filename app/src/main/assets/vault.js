@@ -430,21 +430,21 @@ window.aniFormatRefreshProjectsStatus = function(resultJson){
     const obj = JSON.parse(resultJson || "{}") || {};
     if (obj.ok) {
       if (obj.empty) {
-        return "✅ Projects refreshed: no folders found. Fix: Create a project or tap "Grant vault" to choose the correct folder.";
+        return "✅ Projects refreshed: no folders found. Fix: Create a project or tap \"Grant vault\" to choose the correct folder.";
       }
       return `✅ Projects refreshed from vault folders (${obj.count || 0})`;
     }
     switch (obj.code) {
       case "NO_PERMISSION":
-        return "⚠️ Vault not accessible. Fix: Tap "Grant vault" and re-select your vault folder, then press ↻ Sync.";
+        return "⚠️ Vault not accessible. Fix: Tap \"Grant vault\" and re-select your vault folder, then press ↻ Sync.";
       case "NO_DISK":
         return "ℹ️ Disk refresh isn't available in browser mode. Fix: Use the Android app for vault folder listing.";
       case "BAD_DATA":
       default:
-        return "⚠️ Couldn't read project list. Fix: Tap "Grant vault", then press ↻ Sync again.";
+        return "⚠️ Couldn't read project list. Fix: Tap \"Grant vault\", then press ↻ Sync again.";
     }
   } catch (_e) {
-    return "⚠️ Couldn't read project list. Fix: Tap "Grant vault", then press ↻ Sync again.";
+    return "⚠️ Couldn't read project list. Fix: Tap \"Grant vault\", then press ↻ Sync again.";
   }
 };
 window.aniListSessions = async function(projectDisplay){
