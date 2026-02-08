@@ -567,3 +567,66 @@ waitForElement('#aniProjectSelect', () => {
   console.log("Project select element found, running auto-init...");
   window.aniAutoInit();
 });
+// ========================================
+// 🔄 AUTO-REFRESH OBSERVER
+// ========================================
+// Watch for Gradio UI rebuilds and auto-refresh dropdowns
+(function setupAutoRefresh() {
+  let isRefreshing = false;
+  
+  const refreshDropdowns = async () => {
+    if (isRefreshing) return;
+    isRefreshing = true;
+    
+    try {
+      console.log("🔄 Gradio UI changed, refreshing dropdowns...");
+      
+      // Re-render project picker if it exists but is empty
+      const projSelect = document.querySelector('#aniProjectSelect');
+      if (projSelect && projSelect.options.length <= 1) {
+        await window.aniRenderProjectPicker();
+        console.log("✅ Project picker refreshed");
+      }
+      
+      // Re-render session picker for current project
+      const currentProj = window.aniProjectFromUI();
+      if (currentProj) {
+        const sessSelect = document.querySelector('#aniSessionSelect');
+        if (sessSelect && sessSelect.options.length <= 1) {
+          await window.aniRenderSessionPicker(currentProj);
+          console.log("✅ Session picker refreshed for:", currentProj);
+        }
+      }
+    } catch (e) {
+      console.error("❌ Auto-refresh error:", e);
+    } finally {
+      setTimeout(() => { isRefreshing = false; }, 500);
+    }
+  };
+  
+  // Watch for changes to the Gradio container
+  const observer = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      // Check if dropdowns were affected
+      if (mutation.target.id === 'aniProjectSelect' || 
+          mutation.target.id === 'aniSessionSelect' ||
+          mutation.target.closest('#aniProjectSelect') ||
+          mutation.target.closest('#aniSessionSelect')) {
+        refreshDropdowns();
+        break;
+      }
+    }
+  });
+  
+  // Start observing once Gradio container exists
+  waitForElement('.gradio-container', () => {
+    const container = document.querySelector('.gradio-container');
+    observer.observe(container, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style']
+    });
+    console.log("🔄 Auto-refresh observer activated");
+  });
+})();
