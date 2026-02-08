@@ -154,6 +154,24 @@ class MainActivity : AppCompatActivity() {
         }
 
         // ✅ Load AnI (not ChatGPT)
+        // Inject vault.js after page loads
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                Log.d("AnI", "Page finished loading: $url")
+                // Inject vault.js from assets
+                try {
+                    val jsCode = assets.open("vault.js").bufferedReader().use { it.readText() }
+                    Log.d("AnI", "Injecting vault.js (${jsCode.length} bytes)")
+                    webView.evaluateJavascript(jsCode) { result ->
+                        Log.d("AnI", "Vault.js injection complete, result: $result")
+                    }
+                } catch (e: Exception) {
+                    Log.e("AnI", "Failed to inject vault.js: ${e.message}", e)
+                }
+            }
+        }
+        
         webView.loadUrl(HOME_URL)
 
         // Best-effort: inject saved vault URI for UI diagnostics
