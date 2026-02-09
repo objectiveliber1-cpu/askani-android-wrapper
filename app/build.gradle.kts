@@ -1,6 +1,8 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    implementation("androidx.drawerlayout:drawerlayout:1.2.0")
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
 }
 
 android {
@@ -32,6 +34,8 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    implementation("androidx.drawerlayout:drawerlayout:1.2.0")
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
 }
 
 dependencies {
@@ -39,4 +43,6 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.webkit:webkit:1.11.0")
+    implementation("androidx.drawerlayout:drawerlayout:1.2.0")
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
 }
