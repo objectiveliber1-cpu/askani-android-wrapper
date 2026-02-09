@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.net.Uri
+import java.io.File
 import android.os.Bundle
 import android.provider.DocumentsContract
 import android.util.Log
@@ -153,6 +154,7 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun loadProjects() {
+        Log.d("AnI", "loadProjects() called")
         val vaultUri = prefs.getString(KEY_VAULT_URI, null)
         if (vaultUri.isNullOrBlank()) {
             Toast.makeText(this, "Please select vault folder", Toast.LENGTH_SHORT).show()
@@ -168,9 +170,11 @@ class MainActivity : AppCompatActivity() {
             for (i in 0 until projectList.length()) {
                 val projectName = projectList.getString(i)
                 projects.add(Project(name = projectName))
+            Log.d("AnI", "Loaded ${projects.size} projects into drawer")
             }
             
             updateVaultItems()
+            Log.d("AnI", "updateVaultItems() creating ${vaultItems.size} items for adapter")
         } catch (e: Exception) {
             Log.e("AnI", "Failed to load projects: ${e.message}", e)
             Toast.makeText(this, "Failed to load projects", Toast.LENGTH_SHORT).show()
@@ -200,9 +204,12 @@ class MainActivity : AppCompatActivity() {
         }
         
         updateVaultItems()
+            Log.d("AnI", "updateVaultItems() creating ${vaultItems.size} items for adapter")
     }
     
     private fun updateVaultItems() {
+        Log.d("AnI", "updateVaultItems() called with ${projects.size} projects")
+            Log.d("AnI", "updateVaultItems() creating ${vaultItems.size} items for adapter")
         vaultItems.clear()
         
         for (project in projects) {
@@ -215,7 +222,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
         
-        vaultAdapter.updateItems(vaultItems)
+        Log.d("AnI", "Built ${vaultItems.size} vault items, notifying adapter")
+        vaultAdapter.updateItems(vaultItems.toList())
+        Log.d("AnI", "Adapter notified with ${vaultItems.size} items")
     }
     
     private fun updateContextStatus() {
@@ -247,16 +256,40 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             
-            // Inject context into WebView
-            val contextJson = JSONObject()
-            contextJson.put("sessions", selectedSessions.size)
-            contextJson.put("context", combinedContext.toString())
             
-            webView.evaluateJavascript(
-                "localStorage.setItem('aniContext', ${jsQuote(contextJson.toString())});",
-                null
+            // Create temporary context file
+            val contextFile = File(cacheDir, "session_context_${System.currentTimeMillis()}.txt")
+            contextFile.writeText(
+                "=== AnI Session Context ===\n" +
+                "Loaded ${selectedSessions.size} session(s)\n" +
+                "Generated: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(java.util.Date())}\n\n" +
+                combinedContext.toString()
             )
             
+            Log.d("AnI", "Created context file: ${contextFile.absolutePath}, size: ${contextFile.length()} bytes")
+            
+            // Inject into Gradio textarea with instruction to upload
+            val jsCode = """
+                (function() {
+                    const textarea = document.querySelector('textarea[placeholder*="Type"]') || 
+                                   document.querySelector('textarea');
+                    if (textarea) {
+                        textarea.value = "I've loaded context from ${selectedSessions.size} previous session(s). Please reference the uploaded file 'session_context.txt' for the full conversation history.";
+                        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
+                    return 'ready';
+                })();
+            """.trimIndent()
+            
+            webView.evaluateJavascript(jsCode) { result ->
+                Log.d("AnI", "Context injection result: $result")
+                // TODO: Programmatically trigger file upload to Gradio
+                Toast.makeText(
+                    this@MainActivity,
+                    "📄 Context saved to file (${contextFile.length()/1024}KB). You can manually upload it to the chat.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
             updateContextStatus()
             drawerLayout.close()
             
