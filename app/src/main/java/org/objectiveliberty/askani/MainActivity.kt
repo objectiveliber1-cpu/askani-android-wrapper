@@ -257,48 +257,66 @@ class MainActivity : AppCompatActivity() {
             }
             
             
-            // Create temporary context file
-            val contextFile = File(cacheDir, "session_context_${System.currentTimeMillis()}.txt")
-            contextFile.writeText(
-                "=== AnI Session Context ===\n" +
-                "Loaded ${selectedSessions.size} session(s)\n" +
-                "Generated: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(java.util.Date())}\n\n" +
-                combinedContext.toString()
-            )
             
-            Log.d("AnI", "Created context file: ${contextFile.absolutePath}, size: ${contextFile.length()} bytes")
+            val contextSize = combinedContext.length
+            val sizeThreshold = 50000  // ~12.5K tokens
             
-            // Inject into Gradio textarea with instruction to upload
-            val jsCode = """
-                (function() {
-                    const textarea = document.querySelector('textarea[placeholder*="Type"]') || 
-                                   document.querySelector('textarea');
-                    if (textarea) {
-                        textarea.value = "I've loaded context from ${selectedSessions.size} previous session(s). Please reference the uploaded file 'session_context.txt' for the full conversation history.";
-                        textarea.dispatchEvent(new Event('input', { bubbles: true }));
-                    }
-                    return 'ready';
-                })();
-            """.trimIndent()
-            
-            webView.evaluateJavascript(jsCode) { result ->
-                Log.d("AnI", "Context injection result: $result")
-                // TODO: Programmatically trigger file upload to Gradio
+            if (contextSize < sizeThreshold) {
+                // Small context: inject directly into textarea
+                val contextText = "📚 Context from ${selectedSessions.size} session(s):\n\n$combinedContext\n\n---\n[You can now ask questions about this conversation history]"
+                
+                val jsCode = """
+                    (function() {
+                        const textarea = document.querySelector('textarea[placeholder*="Type"]') || document.querySelector('textarea');
+                        if (textarea) {
+                            textarea.value = ${jsQuote(contextText)};
+                            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                            return 'injected';
+                        }
+                        return 'textarea not found';
+                    })();
+                """.trimIndent()
+                
+                webView.evaluateJavascript(jsCode) { result ->
+                    Log.d("AnI", "Small context injected: $result")
+                }
+                
+                Toast.makeText(this, "Context loaded (${contextSize/1024}KB). Review and send when ready.", Toast.LENGTH_LONG).show()
+                
+            } else {
+                // Large context: create file and show instructions
+                val contextFile = File(getExternalFilesDir(null), "session_context_${System.currentTimeMillis()}.txt")
+                contextFile.writeText(
+                    "=== AnI Session Context ===\n" +
+                    "Loaded ${selectedSessions.size} session(s)\n" +
+                    "Generated: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(java.util.Date())}\n\n" +
+                    combinedContext.toString()
+                )
+                
+                Log.d("AnI", "Large context file created: ${contextFile.absolutePath}")
+                
+                // Put instruction in textarea
+                val jsCode = """
+                    (function() {
+                        const textarea = document.querySelector('textarea[placeholder*="Type"]') || document.querySelector('textarea');
+                        if (textarea) {
+                            textarea.value = "📄 Context is large (${contextSize/1024}KB). File saved: ${contextFile.name}\n\nPlease use the file upload button in the chat to attach this file.";
+                            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                        }
+                        return 'file_created';
+                    })();
+                """.trimIndent()
+                
+                webView.evaluateJavascript(jsCode) { result ->
+                    Log.d("AnI", "Large context file ready: $result")
+                }
+                
                 Toast.makeText(
-                    this@MainActivity,
-                    "📄 Context saved to file (${contextFile.length()/1024}KB). You can manually upload it to the chat.",
+                    this,
+                    "⚠️ Context is large (${contextSize/1024}KB).\nFile saved to: ${contextFile.name}\n\nUpload it via the chat's file button.",
                     Toast.LENGTH_LONG
                 ).show()
             }
-            updateContextStatus()
-            drawerLayout.close()
-            
-            Toast.makeText(
-                this,
-                "Loaded ${selectedSessions.size} session(s) as context",
-                Toast.LENGTH_SHORT
-            ).show()
-            
         } catch (e: Exception) {
             Log.e("AnI", "Failed to load sessions: ${e.message}", e)
             Toast.makeText(this, "Failed to load sessions", Toast.LENGTH_SHORT).show()
