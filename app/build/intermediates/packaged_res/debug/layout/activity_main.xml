@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.drawerlayout.widget.DrawerLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/drawer_layout"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- Main content: WebView -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+        
+        <WebView
+            android:id="@+id/webView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+            
+        <!-- Floating Action Button to open drawer -->
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/fab_drawer"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end|bottom"
+            android:layout_margin="16dp"
+            android:src="@android:drawable/ic_menu_manage"
+            app:tint="@android:color/white" />
+    </FrameLayout>
+
+    <!-- Navigation Drawer -->
+    <LinearLayout
+        android:id="@+id/drawer_container"
+        android:layout_width="300dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:background="?android:attr/colorBackground"
+        android:orientation="vertical">
+
+        <!-- Drawer Header -->
+        <include layout="@layout/drawer_header" />
+
+        <!-- Projects List -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/projects_recycler"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <!-- Load Button -->
+        <Button
+            android:id="@+id/btn_load_sessions"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_margin="16dp"
+            android:text="Load Selected Sessions" />
+    </LinearLayout>
+
+</androidx.drawerlayout.widget.DrawerLayout>

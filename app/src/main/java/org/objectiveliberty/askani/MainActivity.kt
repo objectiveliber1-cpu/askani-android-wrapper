@@ -25,6 +25,11 @@ import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import org.json.JSONArray
 import org.json.JSONObject
+import android.content.ClipboardManager
+import android.content.ClipData
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.nio.charset.Charset
 
 class MainActivity : AppCompatActivity() {
     
@@ -183,7 +188,7 @@ class MainActivity : AppCompatActivity() {
             val projectNames = bridge.listProjects()
             projects.clear()
             
-            val projectList = JSONArray(projectNames)
+            val projectList = JSONArray(projectNames as String)
             for (i in 0 until projectList.length()) {
                 val projectName = projectList.getString(i)
                 projects.add(Project(name = projectName))
@@ -203,7 +208,7 @@ class MainActivity : AppCompatActivity() {
             // Load sessions for this project
             try {
                 val sessionsJson = bridge.listSessions(project.name)
-                val sessionsList = JSONArray(sessionsJson)
+                val sessionsList = JSONArray(sessionsJson as String)
                 
                 for (i in 0 until sessionsList.length()) {
                     val sessionName = sessionsList.getString(i)
@@ -345,7 +350,6 @@ class MainActivity : AppCompatActivity() {
     
     
     class AniBridge(private val activity: MainActivity) {
-    class AniBridge(private val activity: MainActivity) {
 
         // ---------- Clipboard ----------
         @JavascriptInterface
@@ -376,7 +380,7 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun vaultStatus(): String {
-            val uri = activity.prefs.getString(activity.KEY_VAULT_URI, null)
+            val uri = activity.prefs.getString(KEY_VAULT_URI, null)
             return if (uri.isNullOrBlank()) "Vault not set" else "Vault set ✓"
         }
 
@@ -517,7 +521,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         private fun resolveProjectsDir(createIfMissing: Boolean): DocumentFile? {
-            val uriStr = activity.prefs.getString(activity.KEY_VAULT_URI, null)
+            val uriStr = activity.prefs.getString(KEY_VAULT_URI, null)
             if (uriStr.isNullOrBlank()) {
                 Log.w("AnI", "resolveProjectsDir: no vault URI set")
                 return null
@@ -593,7 +597,7 @@ class MainActivity : AppCompatActivity() {
             val vaultUri = activity.prefs.getString(KEY_VAULT_URI, null) ?: return ""
             
             try {
-                val projectsDir = resolveProjectsDir(vaultUri) ?: return ""
+                val projectsDir = resolveProjectsDir(false) ?: return ""
                 val projectFolder = projectsDir.findFile(project.lowercase()) ?: return ""
                 val sessionFile = projectFolder.findFile("$session.json") ?: return ""
                 

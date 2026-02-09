@@ -3094,6 +3094,7 @@ id beginning
 id blocking
 id bottom
 id bounce
+id btn_load_sessions
 id buttonPanel
 id cancel_button
 id center
@@ -3104,6 +3105,7 @@ id center_vertical
 id chain
 id chains
 id checkbox
+id checkbox_session
 id checked
 id chronometer
 id circle_center
@@ -3149,6 +3151,8 @@ id dragLeft
 id dragRight
 id dragStart
 id dragUp
+id drawer_container
+id drawer_layout
 id dropdown_menu
 id easeIn
 id easeInOut
@@ -3166,6 +3170,7 @@ id escape
 id exitUntilCollapsed
 id expand_activities_button
 id expanded_menu
+id fab_drawer
 id fade
 id fill
 id fill_horizontal
@@ -3205,6 +3210,7 @@ id indeterminate
 id info
 id invisible
 id inward
+id is_pooling_container_tag
 id italic
 id item_touch_helper_previous_elevation
 id jumpToEnd
@@ -3322,11 +3328,13 @@ id pathRelative
 id peekHeight
 id percent
 id pin
+id pooling_container_listener_holder_tag
 id position
 id postLayout
 id pressed
 id progress_circular
 id progress_horizontal
+id projects_recycler
 id radio
 id ratio
 id rectangles
@@ -3442,6 +3450,9 @@ id transition_position
 id transition_scene_layoutid_cache
 id transition_transform
 id triangle
+id txt_context_status
+id txt_project_name
+id txt_session_name
 id unchecked
 id uniform
 id unlabeled
@@ -3454,6 +3465,7 @@ id view_tree_saved_state_registry_owner
 id view_tree_view_model_store_owner
 id visible
 id visible_removing_fragment_view_tag
+id webView
 id withText
 id with_icon
 id withinBounds
@@ -3573,6 +3585,7 @@ layout abc_search_dropdown_item_icons_2line
 layout abc_search_view
 layout abc_select_dialog_material
 layout abc_tooltip
+layout activity_main
 layout custom_dialog
 layout design_bottom_navigation_item
 layout design_bottom_sheet_dialog
@@ -3589,8 +3602,11 @@ layout design_navigation_menu
 layout design_navigation_menu_item
 layout design_text_input_end_icon
 layout design_text_input_start_icon
+layout drawer_header
 layout ime_base_split_test_activity
 layout ime_secondary_split_test_activity
+layout item_project
+layout item_session
 layout m3_alert_dialog
 layout m3_alert_dialog_actions
 layout m3_alert_dialog_title

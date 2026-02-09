@@ -1,6 +1,20 @@
 R_DEF: Internal format may change without notice
 local
 drawable ic_launcher_foreground
+id btn_load_sessions
+id checkbox_session
+id drawer_container
+id drawer_layout
+id fab_drawer
+id projects_recycler
+id txt_context_status
+id txt_project_name
+id txt_session_name
+id webView
+layout activity_main
+layout drawer_header
+layout item_project
+layout item_session
 mipmap ic_launcher
 mipmap ic_launcher_round
 string app_name

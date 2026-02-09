@@ -1,0 +1,62 @@
+openjdk version "17.0.7" 2023-04-18
+OpenJDK Runtime Environment (build 17.0.7+7-Ubuntu-0ubuntu118.04)
+OpenJDK 64-Bit Server VM (build 17.0.7+7-Ubuntu-0ubuntu118.04, mixed mode, sharing)
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preDebugBuild UP-TO-DATE
+> Task :app:mergeDebugNativeDebugMetadata NO-SOURCE
+> Task :app:checkKotlinGradlePluginConfigurationErrors
+> Task :app:checkDebugAarMetadata UP-TO-DATE
+> Task :app:generateDebugResValues UP-TO-DATE
+> Task :app:mapDebugSourceSetPaths UP-TO-DATE
+> Task :app:generateDebugResources UP-TO-DATE
+> Task :app:mergeDebugResources UP-TO-DATE
+> Task :app:packageDebugResources UP-TO-DATE
+> Task :app:parseDebugLocalResources UP-TO-DATE
+> Task :app:createDebugCompatibleScreenManifests UP-TO-DATE
+> Task :app:extractDeepLinksDebug UP-TO-DATE
+> Task :app:processDebugMainManifest UP-TO-DATE
+> Task :app:processDebugManifest UP-TO-DATE
+> Task :app:processDebugManifestForPackage UP-TO-DATE
+> Task :app:processDebugResources UP-TO-DATE
+> Task :app:javaPreCompileDebug UP-TO-DATE
+> Task :app:mergeDebugShaders UP-TO-DATE
+> Task :app:compileDebugShaders NO-SOURCE
+> Task :app:generateDebugAssets UP-TO-DATE
+> Task :app:mergeDebugAssets UP-TO-DATE
+> Task :app:compressDebugAssets UP-TO-DATE
+> Task :app:desugarDebugFileDependencies UP-TO-DATE
+> Task :app:checkDebugDuplicateClasses UP-TO-DATE
+> Task :app:mergeExtDexDebug UP-TO-DATE
+> Task :app:mergeLibDexDebug UP-TO-DATE
+> Task :app:mergeDebugJniLibFolders UP-TO-DATE
+> Task :app:mergeDebugNativeLibs NO-SOURCE
+> Task :app:stripDebugDebugSymbols NO-SOURCE
+> Task :app:validateSigningDebug UP-TO-DATE
+> Task :app:writeDebugAppMetadata UP-TO-DATE
+> Task :app:writeDebugSigningConfigVersions UP-TO-DATE
+
+> Task :app:compileDebugKotlin FAILED
+e: file:///home/kodachi/ani-project/askani-android-wrapper/app/src/main/java/org/objectiveliberty/askani/MainActivity.kt:632:2 Missing '}
+e: file:///home/kodachi/ani-project/askani-android-wrapper/app/src/main/java/org/objectiveliberty/askani/MainActivity.kt:149:20 Unresolved reference: ensureProject
+e: file:///home/kodachi/ani-project/askani-android-wrapper/app/src/main/java/org/objectiveliberty/askani/MainActivity.kt:188:39 Unresolved reference: listProjects
+e: file:///home/kodachi/ani-project/askani-android-wrapper/app/src/main/java/org/objectiveliberty/askani/MainActivity.kt:210:43 Unresolved reference: listSessions
+e: file:///home/kodachi/ani-project/askani-android-wrapper/app/src/main/java/org/objectiveliberty/askani/MainActivity.kt:266:45 Unresolved reference: readSessionFile
+e: file:///home/kodachi/ani-project/askani-android-wrapper/app/src/main/java/org/objectiveliberty/askani/MainActivity.kt:384:57 Unresolved reference: KEY_VAULT_URI
+e: file:///home/kodachi/ani-project/askani-android-wrapper/app/src/main/java/org/objectiveliberty/askani/MainActivity.kt:525:60 Unresolved reference: KEY_VAULT_URI
+e: file:///home/kodachi/ani-project/askani-android-wrapper/app/src/main/java/org/objectiveliberty/askani/MainActivity.kt:601:54 Type mismatch: inferred type is String but Boolean was expected
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:compileDebugKotlin'.
+> A failure occurred while executing org.jetbrains.kotlin.compilerRunner.GradleCompilerRunnerWithWorkers$GradleKotlinCompilerWorkAction
+   > Compilation error. See log for more details
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 5s
+26 actionable tasks: 2 executed, 24 up-to-date

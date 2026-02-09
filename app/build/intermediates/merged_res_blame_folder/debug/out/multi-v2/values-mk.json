@@ -1,7 +1,7 @@
 {
     "logs": [
         {
-            "outputFile": "org.objectiveliberty.askani.app-mergeDebugResources-30:/values-mk/values-mk.xml",
+            "outputFile": "org.objectiveliberty.askani.app-mergeDebugResources-31:/values-mk/values-mk.xml",
             "map": [
                 {
                     "source": "/home/kodachi/.gradle/caches/transforms-4/c199fb6b5d1d70ea22bd1c73ce9af778/transformed/material-1.12.0/res/values-mk/values-mk.xml",

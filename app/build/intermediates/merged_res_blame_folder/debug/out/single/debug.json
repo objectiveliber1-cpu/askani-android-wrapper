@@ -1,14 +1,30 @@
 [
     {
-        "merged": "org.objectiveliberty.askani.app-merged_res-32:/drawable_ic_launcher_foreground.xml.flat",
-        "source": "org.objectiveliberty.askani.app-main-34:/drawable/ic_launcher_foreground.xml"
+        "merged": "org.objectiveliberty.askani.app-merged_res-33:/layout_activity_main.xml.flat",
+        "source": "org.objectiveliberty.askani.app-main-35:/layout/activity_main.xml"
     },
     {
-        "merged": "org.objectiveliberty.askani.app-merged_res-32:/mipmap-anydpi-v26_ic_launcher.xml.flat",
-        "source": "org.objectiveliberty.askani.app-main-34:/mipmap-anydpi-v26/ic_launcher.xml"
+        "merged": "org.objectiveliberty.askani.app-merged_res-33:/drawable_ic_launcher_foreground.xml.flat",
+        "source": "org.objectiveliberty.askani.app-main-35:/drawable/ic_launcher_foreground.xml"
     },
     {
-        "merged": "org.objectiveliberty.askani.app-merged_res-32:/mipmap-anydpi-v26_ic_launcher_round.xml.flat",
-        "source": "org.objectiveliberty.askani.app-main-34:/mipmap-anydpi-v26/ic_launcher_round.xml"
+        "merged": "org.objectiveliberty.askani.app-merged_res-33:/layout_item_project.xml.flat",
+        "source": "org.objectiveliberty.askani.app-main-35:/layout/item_project.xml"
+    },
+    {
+        "merged": "org.objectiveliberty.askani.app-merged_res-33:/layout_drawer_header.xml.flat",
+        "source": "org.objectiveliberty.askani.app-main-35:/layout/drawer_header.xml"
+    },
+    {
+        "merged": "org.objectiveliberty.askani.app-merged_res-33:/layout_item_session.xml.flat",
+        "source": "org.objectiveliberty.askani.app-main-35:/layout/item_session.xml"
+    },
+    {
+        "merged": "org.objectiveliberty.askani.app-merged_res-33:/mipmap-anydpi-v26_ic_launcher_round.xml.flat",
+        "source": "org.objectiveliberty.askani.app-main-35:/mipmap-anydpi-v26/ic_launcher_round.xml"
+    },
+    {
+        "merged": "org.objectiveliberty.askani.app-merged_res-33:/mipmap-anydpi-v26_ic_launcher.xml.flat",
+        "source": "org.objectiveliberty.askani.app-main-35:/mipmap-anydpi-v26/ic_launcher.xml"
     }
 ]

@@ -23,7 +23,6 @@
         android:extractNativeLibs="false"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:testOnly="true"
         android:theme="@style/Theme.AskAnI" >
         <activity
             android:name="org.objectiveliberty.askani.MainActivity"
