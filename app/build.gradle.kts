@@ -1,8 +1,6 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    implementation("androidx.drawerlayout:drawerlayout:1.2.0")
-    implementation("androidx.recyclerview:recyclerview:1.3.2")
 }
 
 android {
@@ -19,7 +17,6 @@ android {
 
     buildTypes {
         release {
-            // We are building DEBUG APK in CI (no signing needed).
             isMinifyEnabled = false
         }
         debug {
@@ -31,11 +28,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
     kotlinOptions {
         jvmTarget = "17"
     }
-    implementation("androidx.drawerlayout:drawerlayout:1.2.0")
-    implementation("androidx.recyclerview:recyclerview:1.3.2")
 }
 
 dependencies {
