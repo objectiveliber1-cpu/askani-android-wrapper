@@ -117,30 +117,6 @@ class MainActivity : AppCompatActivity() {
                 super.onPageFinished(view, url)
                 Log.d("AnI", "Page finished loading: $url")
                 
-                // Inject vault.js
-                try {
-                    val jsCode = assets.open("vault.js").bufferedReader(Charsets.UTF_8).use { it.readText() }
-                    Log.d("AnI", "Injecting vault.js (${jsCode.length} bytes)")
-                    
-                    val jsBase64 = android.util.Base64.encodeToString(
-                        jsCode.toByteArray(Charsets.UTF_8),
-                        android.util.Base64.NO_WRAP
-                    )
-                    
-                    val injectionCode = """
-                        (function() {
-                            var script = document.createElement('script');
-                            script.textContent = atob('$jsBase64');
-                            document.head.appendChild(script);
-                        })();
-                    """.trimIndent()
-                    
-                    webView.evaluateJavascript(injectionCode) { result ->
-                        Log.d("AnI", "Vault.js injection complete, result: $result")
-                    }
-                } catch (e: Exception) {
-                    Log.e("AnI", "Failed to inject vault.js: ${e.message}", e)
-                }
             }
         }
         
