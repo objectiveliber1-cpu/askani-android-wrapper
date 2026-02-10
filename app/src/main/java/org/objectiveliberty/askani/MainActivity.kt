@@ -191,7 +191,8 @@ class MainActivity : AppCompatActivity() {
                 val sessionsList = JSONArray(sessionsJson as String)
                 
                 for (i in 0 until sessionsList.length()) {
-                    val sessionName = sessionsList.getString(i)
+                    val sessionObj = sessionsList.getJSONObject(i)
+                    val sessionName = sessionObj.getString("name")
                     project.sessions.add(Session(
                         name = sessionName,
                         project = project.name,
@@ -249,9 +250,12 @@ class MainActivity : AppCompatActivity() {
             
             for (session in selectedSessions) {
                 val sessionContent = bridge.readSessionFile(session.project, session.name)
+                Log.d("AnI", "Session ${session.name}: read ${sessionContent.length} chars")
                 if (sessionContent.isNotEmpty()) {
                     combinedContext.append("=== ${session.project}/${session.name} ===\n")
-                    combinedContext.append(extractConversationHistory(sessionContent))
+                    val extracted = extractConversationHistory(sessionContent)
+                    Log.d("AnI", "Extracted ${extracted.length} chars from ${session.name}")
+                    combinedContext.append(extracted)
                     combinedContext.append("\n\n")
                 }
             }
@@ -265,23 +269,60 @@ class MainActivity : AppCompatActivity() {
                 // Small context: inject directly into textarea
                 val contextText = "📚 Context from ${selectedSessions.size} session(s):\n\n$combinedContext\n\n---\n[You can now ask questions about this conversation history]"
                 
+                // Use base64 to safely encode the context text
+                val contextBytes = contextText.toByteArray(Charsets.UTF_8)
+                val contextBase64 = android.util.Base64.encodeToString(contextBytes, android.util.Base64.NO_WRAP)
+                
                 val jsCode = """
                     (function() {
-                        const textarea = document.querySelector('textarea[placeholder*="Type"]') || document.querySelector('textarea');
-                        if (textarea) {
-                            textarea.value = ${jsQuote(contextText)};
-                            textarea.dispatchEvent(new Event('input', { bubbles: true }));
-                            return 'injected';
+                        // Find the chat textarea (not other textareas)
+                        const textareas = document.querySelectorAll('textarea');
+                        let chatTextarea = null;
+                        
+                        // Find the textarea that's actually for chat input (largest visible one)
+                        for (let ta of textareas) {
+                            if (ta.offsetParent !== null && ta.clientHeight > 50) {
+                                chatTextarea = ta;
+                                break;
+                            }
+                        }
+                        
+                        if (chatTextarea) {
+                            chatTextarea.value = atob('$contextBase64');
+                            chatTextarea.dispatchEvent(new Event('input', { bubbles: true }));
+                            chatTextarea.dispatchEvent(new Event('change', { bubbles: true }));
+                            
+                            // Auto-click send button
+                            setTimeout(() => {
+                                const sendButton = document.querySelector('button[aria-label*="Send"], button[title*="Send"], button:has(svg)');
+                                if (sendButton) sendButton.click();
+                            }, 100);
+                            
+                            return 'injected and sent';
                         }
                         return 'textarea not found';
                     })();
                 """.trimIndent()
                 
-                webView.evaluateJavascript(jsCode) { result ->
-                    Log.d("AnI", "Small context injected: $result")
-                }
+                Log.d("AnI", "Injecting context of ${contextText.length} chars (base64: ${contextBase64.length} chars)")
                 
-                Toast.makeText(this, "Context loaded (${contextSize/1024}KB). Review and send when ready.", Toast.LENGTH_LONG).show()
+                // Delay to let Gradio finish loading
+                webView.postDelayed({
+                    webView.evaluateJavascript(jsCode) { result ->
+                        Log.d("AnI", "Small context injected: $result")
+                        
+                        // Verify it was actually set
+                        webView.evaluateJavascript("document.querySelector('textarea')?.value.length || 0") { length ->
+                            Log.d("AnI", "Textarea now has $length characters")
+                        }
+                        // Also log the actual value
+                        webView.evaluateJavascript("document.querySelector('textarea')?.value.substring(0, 200)") { value ->
+                            Log.d("AnI", "Textarea content: $value")
+                        }
+                    }
+                }, 1000) // Wait 1 second for Gradio to be ready
+                
+                Toast.makeText(this, "✅ Context loaded in chat input! Click SEND to submit it to the AI.", Toast.LENGTH_LONG).show()
                 
             } else {
                 // Large context: create file and show instructions
@@ -324,22 +365,8 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun extractConversationHistory(sessionJson: String): String {
-        return try {
-            val json = JSONObject(sessionJson)
-            val messages = json.optJSONArray("messages") ?: return ""
-            
-            val history = StringBuilder()
-            for (i in 0 until messages.length()) {
-                val msg = messages.getJSONObject(i)
-                val role = msg.optString("role", "unknown")
-                val content = msg.optString("content", "")
-                history.append("[$role]: $content\n\n")
-            }
-            history.toString()
-        } catch (e: Exception) {
-            Log.e("AnI", "Failed to parse session: ${e.message}", e)
-            ""
-        }
+        // Sessions are Markdown files, not JSON - just return the content
+        return sessionJson
     }
     
     private fun launchVaultPicker() {
@@ -625,8 +652,13 @@ class MainActivity : AppCompatActivity() {
             
             try {
                 val projectsDir = resolveProjectsDir(false) ?: return ""
-                val projectFolder = projectsDir.findFile(project.lowercase()) ?: return ""
-                val sessionFile = projectFolder.findFile("$session.json") ?: return ""
+                Log.d("AnI", "projectsDir found: ${projectsDir?.uri}")
+                val projectDir = projectsDir.findFile(project.lowercase())
+                val projectFolder = projectDir?.findFile("Sessions") ?: return ""
+                Log.d("AnI", "Looking for project folder: ${project.lowercase()}, found: ${projectFolder?.uri}")
+                Log.d("AnI", "Files in ${project.lowercase()}: ${projectFolder?.listFiles()?.map { it.name }?.joinToString()}")
+                val sessionFile = projectFolder.findFile(session) ?: return ""
+                Log.d("AnI", "Looking for session: $session, found: ${sessionFile?.uri}")
                 
                 return readTextFile(sessionFile.uri)
             } catch (e: Exception) {
