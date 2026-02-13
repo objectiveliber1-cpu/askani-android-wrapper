@@ -18,6 +18,9 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.SeekBar
 import androidx.appcompat.app.AppCompatActivity
 import androidx.documentfile.provider.DocumentFile
 import androidx.drawerlayout.widget.DrawerLayout
@@ -83,6 +86,7 @@ class MainActivity : AppCompatActivity() {
         webView.settings.allowContentAccess = false
         
         webView.addJavascriptInterface(bridge, "AnIAndroid")
+        webView.addJavascriptInterface(SessionBridge(this), "sessionBridge")
         
         webView.webChromeClient = object : WebChromeClient() {
             override fun onShowFileChooser(
@@ -151,6 +155,34 @@ class MainActivity : AppCompatActivity() {
         btnLoadSessions.setOnClickListener {
             loadSelectedSessions()
         }
+        
+        // Save session button
+        findViewById<Button>(R.id.btn_save_session).setOnClickListener {
+            saveCurrentSession()
+        }
+        
+        // Auto-save toggle button
+        findViewById<Button>(R.id.btn_toggle_autosave).setOnClickListener {
+            toggleAutoSave()
+        }
+        
+        // Advanced options button - shows sub-drawer
+        findViewById<Button>(R.id.btn_advanced_options).setOnClickListener {
+            showAdvancedDrawer()
+        }
+        
+        // Back button in advanced drawer
+        findViewById<Button>(R.id.btn_back_to_main).setOnClickListener {
+            hideAdvancedDrawer()
+        }
+        
+        // Apply advanced settings
+        findViewById<Button>(R.id.btn_apply_advanced).setOnClickListener {
+            applyAdvancedSettings()
+        }
+        
+        // Setup temperature slider
+        setupTemperatureSlider()
     }
     
     private fun loadProjects() {
@@ -364,6 +396,184 @@ class MainActivity : AppCompatActivity() {
         }
     }
     
+    
+    // ========== NEW SAVE FUNCTIONALITY ==========
+    
+    private var isAutoSaveEnabled = false
+    private var autoSaveJob: android.os.Handler? = null
+    
+    
+    private fun saveCurrentSession() {
+        Log.d("AnI", "saveCurrentSession() called")
+
+        // Extract conversation from Gradio and send via SessionBridge
+        // This avoids evaluateJavascript() return value size limits
+        val jsCode = """
+            (function() {
+                console.log('Starting JSON extraction via SessionBridge...');
+
+                let messages = [];
+
+                // Try to find Gradio message elements
+                const msgElements = document.querySelectorAll('[data-testid="bot"], [data-testid="user"]') ||
+                                   document.querySelectorAll('.message') ||
+                                   document.querySelectorAll('.prose');
+
+                console.log('Found elements:', msgElements.length);
+
+                if (msgElements && msgElements.length > 0) {
+                    msgElements.forEach((msg, idx) => {
+                        const role = msg.getAttribute('data-testid') === 'user' ? 'user' : 'assistant';
+                        const text = (msg.innerText || msg.textContent || '').trim();
+
+                        if (text) {
+                            messages.push({
+                                role: role,
+                                content: text,
+                                timestamp: new Date().toISOString(),
+                                include: true
+                            });
+                        }
+                    });
+                } else {
+                    // Fallback: grab all chat text as one assistant message
+                    const chatArea = document.querySelector('[data-testid="chatbot"]') ||
+                                    document.querySelector('.chatbot') ||
+                                    document.querySelector('gradio-app');
+                    if (chatArea) {
+                        const allText = (chatArea.innerText || chatArea.textContent || '').trim();
+                        if (allText) {
+                            messages.push({
+                                role: 'assistant',
+                                content: allText,
+                                timestamp: new Date().toISOString(),
+                                include: true
+                            });
+                        }
+                    }
+                }
+
+                if (messages.length === 0) {
+                    console.log('No messages found to save');
+                    return;
+                }
+
+                const session = {
+                    project: 'general',
+                    sessionId: Date.now().toString(),
+                    exported: new Date().toISOString(),
+                    messages: messages
+                };
+
+                console.log('Sending', messages.length, 'messages via sessionBridge');
+                window.sessionBridge.receiveSessionData(JSON.stringify(session));
+            })();
+        """.trimIndent()
+
+        webView.evaluateJavascript(jsCode, null)
+    }
+    
+    private fun saveSessionToFile(sessionData: String) {
+        try {
+            val currentProject = projects.firstOrNull() ?: Project("general", mutableListOf())
+            val timestamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss").format(java.util.Date())
+            val filename = "ani-${currentProject.name}-$timestamp.json"
+            
+            val vaultUri = prefs.getString(KEY_VAULT_URI, null) ?: return
+            val projectsDir = DocumentFile.fromTreeUri(this, android.net.Uri.parse(vaultUri))?.findFile("Projects")
+            val projectFolder = projectsDir?.findFile(currentProject.name.lowercase())
+            val sessionsFolder = projectFolder?.findFile("Sessions")
+            
+            if (sessionsFolder != null) {
+                val sessionFile = sessionsFolder.createFile("application/json", filename)
+                if (sessionFile != null) {
+                    contentResolver.openOutputStream(sessionFile.uri, "wt").use { os ->
+                        os?.write(sessionData.toByteArray(Charsets.UTF_8))
+                    }
+                    Toast.makeText(this, "✅ Session saved: $filename", Toast.LENGTH_LONG).show()
+                    Log.d("AnI", "Session saved: $filename")
+                } else {
+                    Toast.makeText(this, "Failed to create session file", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                Toast.makeText(this, "Sessions folder not found", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) {
+            Log.e("AnI", "Failed to save session: ${e.message}", e)
+            Toast.makeText(this, "Failed to save session", Toast.LENGTH_SHORT).show()
+        }
+    }
+    
+    private fun toggleAutoSave() {
+        isAutoSaveEnabled = !isAutoSaveEnabled
+        
+        val button = findViewById<Button>(R.id.btn_toggle_autosave)
+        if (isAutoSaveEnabled) {
+            button.text = "🔄 Auto-Save: ON"
+            startAutoSave()
+            Toast.makeText(this, "Auto-save enabled (every 2 minutes)", Toast.LENGTH_SHORT).show()
+        } else {
+            button.text = "🔄 Auto-Save: OFF"
+            stopAutoSave()
+            Toast.makeText(this, "Auto-save disabled", Toast.LENGTH_SHORT).show()
+        }
+        
+        Log.d("AnI", "Auto-save toggled: $isAutoSaveEnabled")
+    }
+    
+    private fun startAutoSave() {
+        stopAutoSave() // Clear any existing handler
+        
+        autoSaveJob = android.os.Handler(android.os.Looper.getMainLooper())
+        autoSaveJob?.postDelayed(object : Runnable {
+            override fun run() {
+                if (isAutoSaveEnabled) {
+                    Log.d("AnI", "Auto-save triggered")
+                    saveCurrentSession()
+                    autoSaveJob?.postDelayed(this, 120000) // 2 minutes
+                }
+            }
+        }, 120000) // First save after 2 minutes
+    }
+    
+    private fun stopAutoSave() {
+        autoSaveJob?.removeCallbacksAndMessages(null)
+        autoSaveJob = null
+    }
+    
+    // ========== ADVANCED OPTIONS DRAWER ==========
+    
+    private fun showAdvancedDrawer() {
+        findViewById<LinearLayout>(R.id.drawer_container).visibility = android.view.View.GONE
+        findViewById<ScrollView>(R.id.advanced_drawer).visibility = android.view.View.VISIBLE
+    }
+    
+    private fun hideAdvancedDrawer() {
+        findViewById<ScrollView>(R.id.advanced_drawer).visibility = android.view.View.GONE
+        findViewById<LinearLayout>(R.id.drawer_container).visibility = android.view.View.VISIBLE
+    }
+    
+    private fun setupTemperatureSlider() {
+        val seekBar = findViewById<android.widget.SeekBar>(R.id.seekbar_temperature)
+        val textView = findViewById<android.widget.TextView>(R.id.text_temperature_value)
+        
+        seekBar.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
+                val temp = progress / 100.0
+                textView.text = String.format("%.1f", temp)
+            }
+            override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {}
+        })
+    }
+    
+    private fun applyAdvancedSettings() {
+        // TODO: Implement advanced settings application
+        // For now, just close the drawer and show confirmation
+        Toast.makeText(this, "Advanced settings will be implemented soon", Toast.LENGTH_SHORT).show()
+        hideAdvancedDrawer()
+        drawerLayout.close()
+    }
     private fun extractConversationHistory(sessionJson: String): String {
         // Sessions are Markdown files, not JSON - just return the content
         return sessionJson
@@ -403,6 +613,26 @@ class MainActivity : AppCompatActivity() {
     }
     
     
+    class SessionBridge(private val activity: MainActivity) {
+
+        @JavascriptInterface
+        fun receiveSessionData(json: String) {
+            Log.d("AnI", "SessionBridge received ${json.length} chars")
+            try {
+                val sessionObj = JSONObject(json)
+                val sessionData = sessionObj.toString(2)
+                activity.runOnUiThread {
+                    activity.saveSessionToFile(sessionData)
+                }
+            } catch (e: Exception) {
+                Log.e("AnI", "SessionBridge failed to parse JSON: ${e.message}", e)
+                activity.runOnUiThread {
+                    Toast.makeText(activity, "Failed to save session data", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
     class AniBridge(private val activity: MainActivity) {
 
         // ---------- Clipboard ----------
