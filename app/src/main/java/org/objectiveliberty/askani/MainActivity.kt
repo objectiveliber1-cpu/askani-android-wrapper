@@ -285,7 +285,7 @@ class MainActivity : AppCompatActivity() {
                 Log.d("AnI", "Session ${session.name}: read ${sessionContent.length} chars")
                 if (sessionContent.isNotEmpty()) {
                     combinedContext.append("=== ${session.project}/${session.name} ===\n")
-                    val extracted = extractConversationHistory(sessionContent)
+                    val extracted = extractConversationHistory(sessionContent, session.name)
                     Log.d("AnI", "Extracted ${extracted.length} chars from ${session.name}")
                     combinedContext.append(extracted)
                     combinedContext.append("\n\n")
@@ -574,9 +574,30 @@ class MainActivity : AppCompatActivity() {
         hideAdvancedDrawer()
         drawerLayout.close()
     }
-    private fun extractConversationHistory(sessionJson: String): String {
-        // Sessions are Markdown files, not JSON - just return the content
-        return sessionJson
+    private fun extractConversationHistory(content: String, filename: String): String {
+        if (!filename.lowercase().endsWith(".json")) {
+            // Markdown files — return as-is
+            return content
+        }
+
+        // JSON session format: { "messages": [ { "role": "...", "content": "..." }, ... ] }
+        return try {
+            val obj = JSONObject(content)
+            val messages = obj.optJSONArray("messages") ?: return content
+            val sb = StringBuilder()
+            for (i in 0 until messages.length()) {
+                val msg = messages.getJSONObject(i)
+                val role = msg.optString("role", "unknown")
+                val text = msg.optString("content", "")
+                if (text.isNotBlank()) {
+                    sb.append("[${role}]: $text\n\n")
+                }
+            }
+            sb.toString().ifBlank { content }
+        } catch (e: Exception) {
+            Log.w("AnI", "Failed to parse JSON session $filename, treating as plain text: ${e.message}")
+            content
+        }
     }
     
     private fun launchVaultPicker() {
@@ -705,7 +726,7 @@ class MainActivity : AppCompatActivity() {
             val files = sessionsDir.listFiles()
                 .filter { it.isFile }
                 .mapNotNull { it.name }
-                .filter { it.lowercase().endsWith(".md") }
+                .filter { it.lowercase().endsWith(".md") || it.lowercase().endsWith(".json") }
                 .sortedDescending()
 
             val out = JSONArray()
