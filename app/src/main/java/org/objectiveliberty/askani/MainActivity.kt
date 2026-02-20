@@ -17,10 +17,17 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.TextView
+import android.widget.ArrayAdapter
+import android.widget.EditText
+import android.widget.Spinner
 import android.widget.Toast
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
+import android.graphics.drawable.GradientDrawable
+import android.view.Gravity
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.documentfile.provider.DocumentFile
 import androidx.drawerlayout.widget.DrawerLayout
@@ -44,7 +51,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnLoadSessions: Button
     private lateinit var txtContextStatus: TextView
     private lateinit var fabDrawer: FloatingActionButton
-    
+    private lateinit var projectSpinner: Spinner
+    private lateinit var projectSpinnerAdapter: ArrayAdapter<String>
+
+    private lateinit var chipContainer: LinearLayout
+    private lateinit var chipScrollView: HorizontalScrollView
+    private val pendingSessionContent = linkedMapOf<String, String>()
+
     private val projects = mutableListOf<Project>()
     private val vaultItems = mutableListOf<VaultItem>()
     
@@ -71,7 +84,13 @@ class MainActivity : AppCompatActivity() {
         btnLoadSessions = findViewById(R.id.btn_load_sessions)
         txtContextStatus = findViewById(R.id.txt_context_status)
         fabDrawer = findViewById(R.id.fab_drawer)
-        
+        projectSpinner = findViewById(R.id.spinner_project)
+        projectSpinnerAdapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, mutableListOf<String>())
+        projectSpinnerAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        projectSpinner.adapter = projectSpinnerAdapter
+        chipContainer = findViewById(R.id.chip_container)
+        chipScrollView = findViewById(R.id.chip_scroll_view)
+
         setupWebView()
         setupDrawer()
         loadProjects()
@@ -121,7 +140,26 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 Log.d("AnI", "Page finished loading: $url")
-                
+                // Hide Gradio's "Tools" button — replaced by the native FAB/drawer
+                view?.evaluateJavascript("""
+                    (function() {
+                        function hideToolsBtn() {
+                            var btns = document.querySelectorAll('button');
+                            for (var i = 0; i < btns.length; i++) {
+                                if (btns[i].textContent.trim().match(/^[\u2630☰]?\s*Tools$/)) {
+                                    btns[i].style.display = 'none';
+                                }
+                            }
+                        }
+                        hideToolsBtn();
+                        setTimeout(hideToolsBtn, 1500);
+                        setTimeout(hideToolsBtn, 4000);
+                    })();
+                """.trimIndent(), null)
+                if (isAutoSaveEnabled) {
+                    // Re-inject observer after page reload
+                    view?.postDelayed({ injectAutoSaveObserver() }, 2000)
+                }
             }
         }
         
@@ -166,6 +204,11 @@ class MainActivity : AppCompatActivity() {
             toggleAutoSave()
         }
         
+        // New project button
+        findViewById<Button>(R.id.btn_new_project).setOnClickListener {
+            showNewProjectDialog()
+        }
+
         // Advanced options button - shows sub-drawer
         findViewById<Button>(R.id.btn_advanced_options).setOnClickListener {
             showAdvancedDrawer()
@@ -183,8 +226,59 @@ class MainActivity : AppCompatActivity() {
         
         // Setup temperature slider
         setupTemperatureSlider()
+
+        // Setup model override spinner
+        val modelSpinner = findViewById<Spinner>(R.id.spinner_model)
+        val models = listOf(
+            "(default)", "gemini/gemini-2.5-flash", "gemini/gemini-2.5-pro",
+            "openai/gpt-4o", "openai/gpt-4o-mini",
+            "groq/llama-3.3-70b-versatile", "groq/llama-3.1-8b-instant",
+            "xai/grok-3-mini"
+        )
+        val modelAdapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, models)
+        modelAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        modelSpinner.adapter = modelAdapter
     }
     
+    private fun selectedProject(): String {
+        return (projectSpinner.selectedItem as? String) ?: "general"
+    }
+
+    private fun showNewProjectDialog() {
+        val input = EditText(this)
+        input.hint = "Project name"
+
+        AlertDialog.Builder(this)
+            .setTitle("New Project")
+            .setView(input)
+            .setPositiveButton("Create") { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isNotEmpty()) {
+                    val result = bridge.ensureProject(name)
+                    if (result == "ok") {
+                        // Also ensure Sessions subfolder exists
+                        val projectsDir = bridge.resolveProjectsDirPublic(true)
+                        if (projectsDir != null) {
+                            val projDir = projectsDir.findFile(name)
+                            if (projDir != null) {
+                                bridge.getOrCreateDirPublic(projDir, "Sessions")
+                                bridge.getOrCreateDirPublic(projDir, "Exports")
+                            }
+                        }
+                        loadProjects()
+                        // Select the new project in spinner
+                        val pos = projectSpinnerAdapter.getPosition(name)
+                        if (pos >= 0) projectSpinner.setSelection(pos)
+                        Toast.makeText(this, "Project '$name' created", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(this, "Failed to create project: $result", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun loadProjects() {
         Log.d("AnI", "loadProjects() called")
         val vaultUri = prefs.getString(KEY_VAULT_URI, null)
@@ -207,6 +301,15 @@ class MainActivity : AppCompatActivity() {
             
             updateVaultItems()
             Log.d("AnI", "updateVaultItems() creating ${vaultItems.size} items for adapter")
+
+            // Populate project spinner
+            val spinnerNames = projects.map { it.name }
+            projectSpinnerAdapter.clear()
+            projectSpinnerAdapter.addAll(spinnerNames)
+            projectSpinnerAdapter.notifyDataSetChanged()
+            // Default-select "general" if present
+            val generalIdx = spinnerNames.indexOfFirst { it.equals("general", ignoreCase = true) }
+            if (generalIdx >= 0) projectSpinner.setSelection(generalIdx)
         } catch (e: Exception) {
             Log.e("AnI", "Failed to load projects: ${e.message}", e)
             Toast.makeText(this, "Failed to load projects", Toast.LENGTH_SHORT).show()
@@ -261,6 +364,10 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun updateContextStatus() {
+        if (pendingSessionContent.isNotEmpty()) {
+            txtContextStatus.text = "📎 ${pendingSessionContent.size} session(s) attached"
+            return
+        }
         val selectedCount = projects.flatMap { it.sessions }.count { it.isSelected }
         txtContextStatus.text = if (selectedCount == 0) {
             "No context loaded"
@@ -271,136 +378,204 @@ class MainActivity : AppCompatActivity() {
     
     private fun loadSelectedSessions() {
         val selectedSessions = projects.flatMap { it.sessions }.filter { it.isSelected }
-        
+
         if (selectedSessions.isEmpty()) {
             Toast.makeText(this, "No sessions selected", Toast.LENGTH_SHORT).show()
             return
         }
-        
+
         try {
-            val combinedContext = StringBuilder()
-            
+            var newlyAdded = 0
             for (session in selectedSessions) {
-                val sessionContent = bridge.readSessionFile(session.project, session.name)
-                Log.d("AnI", "Session ${session.name}: read ${sessionContent.length} chars")
-                if (sessionContent.isNotEmpty()) {
-                    combinedContext.append("=== ${session.project}/${session.name} ===\n")
-                    val extracted = extractConversationHistory(sessionContent, session.name)
+                val key = "${session.project}/${session.name}"
+                if (pendingSessionContent.containsKey(key)) continue
+
+                val raw = bridge.readSessionFile(session.project, session.name)
+                Log.d("AnI", "Session ${session.name}: read ${raw.length} chars")
+                if (raw.isNotEmpty()) {
+                    val extracted = extractConversationHistory(raw, session.name)
                     Log.d("AnI", "Extracted ${extracted.length} chars from ${session.name}")
-                    combinedContext.append(extracted)
-                    combinedContext.append("\n\n")
+                    pendingSessionContent[key] = extracted
+                    addSessionChip(key, session.name)
+                    newlyAdded++
                 }
             }
-            
-            
-            
-            val contextSize = combinedContext.length
-            val sizeThreshold = 50000  // ~12.5K tokens
-            
-            if (contextSize < sizeThreshold) {
-                // Small context: inject directly into textarea
-                val contextText = "📚 Context from ${selectedSessions.size} session(s):\n\n$combinedContext\n\n---\n[You can now ask questions about this conversation history]"
-                
-                // Use base64 to safely encode the context text
-                val contextBytes = contextText.toByteArray(Charsets.UTF_8)
-                val contextBase64 = android.util.Base64.encodeToString(contextBytes, android.util.Base64.NO_WRAP)
-                
-                val jsCode = """
-                    (function() {
-                        // Find the chat textarea (not other textareas)
-                        const textareas = document.querySelectorAll('textarea');
-                        let chatTextarea = null;
-                        
-                        // Find the textarea that's actually for chat input (largest visible one)
-                        for (let ta of textareas) {
-                            if (ta.offsetParent !== null && ta.clientHeight > 50) {
-                                chatTextarea = ta;
-                                break;
-                            }
-                        }
-                        
-                        if (chatTextarea) {
-                            chatTextarea.value = atob('$contextBase64');
-                            chatTextarea.dispatchEvent(new Event('input', { bubbles: true }));
-                            chatTextarea.dispatchEvent(new Event('change', { bubbles: true }));
-                            
-                            // Auto-click send button
-                            setTimeout(() => {
-                                const sendButton = document.querySelector('button[aria-label*="Send"], button[title*="Send"], button:has(svg)');
-                                if (sendButton) sendButton.click();
-                            }, 100);
-                            
-                            return 'injected and sent';
-                        }
-                        return 'textarea not found';
-                    })();
-                """.trimIndent()
-                
-                Log.d("AnI", "Injecting context of ${contextText.length} chars (base64: ${contextBase64.length} chars)")
-                
-                // Delay to let Gradio finish loading
-                webView.postDelayed({
-                    webView.evaluateJavascript(jsCode) { result ->
-                        Log.d("AnI", "Small context injected: $result")
-                        
-                        // Verify it was actually set
-                        webView.evaluateJavascript("document.querySelector('textarea')?.value.length || 0") { length ->
-                            Log.d("AnI", "Textarea now has $length characters")
-                        }
-                        // Also log the actual value
-                        webView.evaluateJavascript("document.querySelector('textarea')?.value.substring(0, 200)") { value ->
-                            Log.d("AnI", "Textarea content: $value")
-                        }
-                    }
-                }, 1000) // Wait 1 second for Gradio to be ready
-                
-                Toast.makeText(this, "✅ Context loaded in chat input! Click SEND to submit it to the AI.", Toast.LENGTH_LONG).show()
-                
+
+            if (pendingSessionContent.isNotEmpty()) {
+                chipScrollView.visibility = android.view.View.VISIBLE
+                injectSendInterceptor()
+            }
+
+            // Deselect sessions so drawer looks clean on next open
+            for (session in selectedSessions) {
+                session.isSelected = false
+            }
+            vaultAdapter.notifyDataSetChanged()
+            updateContextStatus()
+
+            drawerLayout.close()
+            if (newlyAdded > 0) {
+                Toast.makeText(this, "📎 $newlyAdded session(s) attached — type your message and send", Toast.LENGTH_LONG).show()
             } else {
-                // Large context: create file and show instructions
-                val contextFile = File(getExternalFilesDir(null), "session_context_${System.currentTimeMillis()}.txt")
-                contextFile.writeText(
-                    "=== AnI Session Context ===\n" +
-                    "Loaded ${selectedSessions.size} session(s)\n" +
-                    "Generated: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(java.util.Date())}\n\n" +
-                    combinedContext.toString()
-                )
-                
-                Log.d("AnI", "Large context file created: ${contextFile.absolutePath}")
-                
-                // Put instruction in textarea
-                val jsCode = """
-                    (function() {
-                        const textarea = document.querySelector('textarea[placeholder*="Type"]') || document.querySelector('textarea');
-                        if (textarea) {
-                            textarea.value = "📄 Context is large (${contextSize/1024}KB). File saved: ${contextFile.name}\n\nPlease use the file upload button in the chat to attach this file.";
-                            textarea.dispatchEvent(new Event('input', { bubbles: true }));
-                        }
-                        return 'file_created';
-                    })();
-                """.trimIndent()
-                
-                webView.evaluateJavascript(jsCode) { result ->
-                    Log.d("AnI", "Large context file ready: $result")
-                }
-                
-                Toast.makeText(
-                    this,
-                    "⚠️ Context is large (${contextSize/1024}KB).\nFile saved to: ${contextFile.name}\n\nUpload it via the chat's file button.",
-                    Toast.LENGTH_LONG
-                ).show()
+                Toast.makeText(this, "Sessions already attached", Toast.LENGTH_SHORT).show()
             }
         } catch (e: Exception) {
             Log.e("AnI", "Failed to load sessions: ${e.message}", e)
             Toast.makeText(this, "Failed to load sessions", Toast.LENGTH_SHORT).show()
         }
     }
+
+    // ========== CHIP UI MANAGEMENT ==========
+
+    private fun addSessionChip(key: String, displayName: String) {
+        val chip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            val bg = GradientDrawable().apply {
+                setColor(0xFF5C6BC0.toInt())
+                cornerRadius = 16f * resources.displayMetrics.density
+            }
+            background = bg
+            val hPad = (10 * resources.displayMetrics.density).toInt()
+            val vPad = (4 * resources.displayMetrics.density).toInt()
+            setPadding(hPad, vPad, hPad, vPad)
+            val lp = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            lp.marginEnd = (6 * resources.displayMetrics.density).toInt()
+            layoutParams = lp
+            tag = key
+        }
+
+        val label = TextView(this).apply {
+            val truncated = if (displayName.length > 22) displayName.take(20) + "…" else displayName
+            text = truncated
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 13f
+        }
+
+        val closeBtn = TextView(this).apply {
+            text = " ✕"
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 14f
+            setOnClickListener {
+                pendingSessionContent.remove(key)
+                chipContainer.removeView(chip)
+                if (pendingSessionContent.isEmpty()) {
+                    chipScrollView.visibility = android.view.View.GONE
+                    disconnectSendInterceptor()
+                }
+                // Also uncheck the session in the drawer if still visible
+                val (proj, sessionName) = key.split("/", limit = 2).let {
+                    if (it.size == 2) it[0] to it[1] else "" to key
+                }
+                projects.flatMap { it.sessions }
+                    .find { it.project == proj && it.name == sessionName }
+                    ?.let { it.isSelected = false }
+                vaultAdapter.notifyDataSetChanged()
+                updateContextStatus()
+            }
+        }
+
+        chip.setOnLongClickListener {
+            val content = pendingSessionContent[key] ?: ""
+            val preview = if (content.length > 2000) content.take(2000) + "\n\n… (truncated)" else content
+            val scrollView = ScrollView(this).apply {
+                val tv = TextView(this@MainActivity).apply {
+                    text = preview
+                    setPadding(24, 24, 24, 24)
+                    textSize = 12f
+                }
+                addView(tv)
+            }
+            AlertDialog.Builder(this)
+                .setTitle(key)
+                .setView(scrollView)
+                .setPositiveButton("OK", null)
+                .show()
+            true
+        }
+
+        chip.addView(label)
+        chip.addView(closeBtn)
+        chipContainer.addView(chip)
+    }
+
+    private fun clearAllChips() {
+        chipContainer.removeAllViews()
+        pendingSessionContent.clear()
+        chipScrollView.visibility = android.view.View.GONE
+        disconnectSendInterceptor()
+        updateContextStatus()
+    }
+
+    // ========== SEND INTERCEPTION ==========
+
+    private fun injectSendInterceptor() {
+        val js = """
+            (function() {
+                // Remove previous interceptor if present
+                if (window.__aniSendInterceptor) {
+                    const oldBtn = window.__aniSendInterceptorBtn;
+                    if (oldBtn) oldBtn.removeEventListener('click', window.__aniSendInterceptor, true);
+                    window.__aniSendInterceptor = null;
+                    window.__aniSendInterceptorBtn = null;
+                }
+
+                function findSendButton() {
+                    return document.querySelector('#aniAskBtn, button[aria-label*="Send"], button[title*="Send"]')
+                        || document.querySelector('button:has(svg)');
+                }
+
+                function findTextarea() {
+                    const textareas = document.querySelectorAll('textarea');
+                    for (let ta of textareas) {
+                        if (ta.offsetParent !== null && ta.clientHeight > 30) return ta;
+                    }
+                    return null;
+                }
+
+                const sendBtn = findSendButton();
+                if (!sendBtn) { console.log('AnI: send button not found for interceptor'); return; }
+
+                function interceptHandler(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    const ta = findTextarea();
+                    const userMsg = ta ? ta.value : '';
+                    console.log('AnI: intercepted send, user msg length=' + userMsg.length);
+                    window.sessionBridge.onSendWithContext(userMsg);
+                }
+
+                sendBtn.addEventListener('click', interceptHandler, true);
+                window.__aniSendInterceptor = interceptHandler;
+                window.__aniSendInterceptorBtn = sendBtn;
+                console.log('AnI: send interceptor installed');
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
+    }
+
+    private fun disconnectSendInterceptor() {
+        val js = """
+            (function() {
+                if (window.__aniSendInterceptor && window.__aniSendInterceptorBtn) {
+                    window.__aniSendInterceptorBtn.removeEventListener('click', window.__aniSendInterceptor, true);
+                    window.__aniSendInterceptor = null;
+                    window.__aniSendInterceptorBtn = null;
+                    console.log('AnI: send interceptor removed');
+                }
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
+    }
     
     
     // ========== NEW SAVE FUNCTIONALITY ==========
     
     private var isAutoSaveEnabled = false
-    private var autoSaveJob: android.os.Handler? = null
     
     
     private fun saveCurrentSession() {
@@ -459,7 +634,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 const session = {
-                    project: 'general',
+                    project: '${selectedProject().replace("'", "\\'")}',
                     sessionId: Date.now().toString(),
                     exported: new Date().toISOString(),
                     messages: messages
@@ -475,13 +650,15 @@ class MainActivity : AppCompatActivity() {
     
     private fun saveSessionToFile(sessionData: String) {
         try {
-            val currentProject = projects.firstOrNull() ?: Project("general", mutableListOf())
+            val projectName = selectedProject()
             val timestamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss").format(java.util.Date())
-            val filename = "ani-${currentProject.name}-$timestamp.json"
-            
-            val vaultUri = prefs.getString(KEY_VAULT_URI, null) ?: return
-            val projectsDir = DocumentFile.fromTreeUri(this, android.net.Uri.parse(vaultUri))?.findFile("Projects")
-            val projectFolder = projectsDir?.findFile(currentProject.name.lowercase())
+            val filename = "ani-${projectName}-$timestamp.json"
+
+            val projectsDir = bridge.resolveProjectsDirPublic(false) ?: run {
+                Toast.makeText(this, "Vault not accessible", Toast.LENGTH_SHORT).show()
+                return
+            }
+            val projectFolder = projectsDir.findFile(projectName) ?: projectsDir.findFile(projectName.lowercase())
             val sessionsFolder = projectFolder?.findFile("Sessions")
             
             if (sessionsFolder != null) {
@@ -506,39 +683,80 @@ class MainActivity : AppCompatActivity() {
     
     private fun toggleAutoSave() {
         isAutoSaveEnabled = !isAutoSaveEnabled
-        
+
         val button = findViewById<Button>(R.id.btn_toggle_autosave)
         if (isAutoSaveEnabled) {
             button.text = "🔄 Auto-Save: ON"
-            startAutoSave()
-            Toast.makeText(this, "Auto-save enabled (every 2 minutes)", Toast.LENGTH_SHORT).show()
+            injectAutoSaveObserver()
+            Toast.makeText(this, "Auto-save enabled (triggers after AI responses)", Toast.LENGTH_SHORT).show()
         } else {
             button.text = "🔄 Auto-Save: OFF"
-            stopAutoSave()
+            disconnectAutoSaveObserver()
             Toast.makeText(this, "Auto-save disabled", Toast.LENGTH_SHORT).show()
         }
-        
+
         Log.d("AnI", "Auto-save toggled: $isAutoSaveEnabled")
     }
-    
-    private fun startAutoSave() {
-        stopAutoSave() // Clear any existing handler
-        
-        autoSaveJob = android.os.Handler(android.os.Looper.getMainLooper())
-        autoSaveJob?.postDelayed(object : Runnable {
-            override fun run() {
-                if (isAutoSaveEnabled) {
-                    Log.d("AnI", "Auto-save triggered")
-                    saveCurrentSession()
-                    autoSaveJob?.postDelayed(this, 120000) // 2 minutes
+
+    private fun injectAutoSaveObserver() {
+        val js = """
+            (function() {
+                if (window.__aniAutoSaveObserver) {
+                    window.__aniAutoSaveObserver.disconnect();
                 }
-            }
-        }, 120000) // First save after 2 minutes
+                let debounceTimer = null;
+                const chatContainer = document.querySelector('[data-testid="chatbot"]') ||
+                                      document.querySelector('.chatbot') ||
+                                      document.querySelector('gradio-app');
+                if (!chatContainer) {
+                    console.log('AnI: No chat container found for auto-save observer');
+                    return;
+                }
+                window.__aniAutoSaveObserver = new MutationObserver(function(mutations) {
+                    let hasNewBot = false;
+                    for (const m of mutations) {
+                        for (const node of m.addedNodes) {
+                            if (node.nodeType === 1) {
+                                if (node.matches && node.matches('[data-testid="bot"]')) hasNewBot = true;
+                                if (node.querySelector && node.querySelector('[data-testid="bot"]')) hasNewBot = true;
+                            }
+                        }
+                        // Also detect text changes inside bot messages (streaming)
+                        if (m.type === 'characterData' || m.type === 'childList') {
+                            const target = m.target.nodeType === 1 ? m.target : m.target.parentElement;
+                            if (target && target.closest && target.closest('[data-testid="bot"]')) hasNewBot = true;
+                        }
+                    }
+                    if (hasNewBot) {
+                        if (debounceTimer) clearTimeout(debounceTimer);
+                        debounceTimer = setTimeout(function() {
+                            console.log('AnI: Auto-save triggered by new bot message');
+                            window.sessionBridge.autoSaveTriggered();
+                        }, 3000);
+                    }
+                });
+                window.__aniAutoSaveObserver.observe(chatContainer, {
+                    childList: true,
+                    subtree: true,
+                    characterData: true
+                });
+                console.log('AnI: Auto-save MutationObserver installed');
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
     }
-    
-    private fun stopAutoSave() {
-        autoSaveJob?.removeCallbacksAndMessages(null)
-        autoSaveJob = null
+
+    private fun disconnectAutoSaveObserver() {
+        val js = """
+            (function() {
+                if (window.__aniAutoSaveObserver) {
+                    window.__aniAutoSaveObserver.disconnect();
+                    window.__aniAutoSaveObserver = null;
+                    console.log('AnI: Auto-save MutationObserver disconnected');
+                }
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
     }
     
     // ========== ADVANCED OPTIONS DRAWER ==========
@@ -568,9 +786,115 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun applyAdvancedSettings() {
-        // TODO: Implement advanced settings application
-        // For now, just close the drawer and show confirmation
-        Toast.makeText(this, "Advanced settings will be implemented soon", Toast.LENGTH_SHORT).show()
+        // Read values from Android UI
+        val temperature = findViewById<SeekBar>(R.id.seekbar_temperature).progress / 100.0
+        val maxTokensText = findViewById<android.widget.EditText>(R.id.edit_max_tokens).text.toString().trim()
+        val maxTokens = maxTokensText.toIntOrNull()
+        val modelRaw = (findViewById<Spinner>(R.id.spinner_model).selectedItem as? String) ?: ""
+        val modelOverride = if (modelRaw == "(default)") "" else modelRaw
+        val includeContext = findViewById<android.widget.CheckBox>(R.id.checkbox_include_context).isChecked
+        val includeSources = findViewById<android.widget.CheckBox>(R.id.checkbox_include_sources).isChecked
+        val systemInstructions = findViewById<android.widget.EditText>(R.id.edit_system_instructions).text.toString()
+
+        // Escape strings for JS injection
+        val modelJs = modelOverride.replace("\\", "\\\\").replace("'", "\\'")
+        val systemJs = systemInstructions.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
+
+        val jsCode = """
+            (function() {
+                // Helper: find a Gradio component container by its label text
+                function findByLabel(labelText) {
+                    const labels = document.querySelectorAll('label span, label');
+                    for (const lbl of labels) {
+                        if (lbl.textContent.trim().startsWith(labelText)) {
+                            // Walk up to find the Gradio component container
+                            let container = lbl.closest('.gradio-container, .gradio-group, [class*="wrap"], [class*="block"]');
+                            if (!container) container = lbl.parentElement?.parentElement;
+                            return container;
+                        }
+                    }
+                    return null;
+                }
+
+                // Helper: set a Gradio textbox value
+                function setTextbox(labelText, value) {
+                    const container = findByLabel(labelText);
+                    if (!container) { console.log('AnI: textbox not found: ' + labelText); return; }
+                    const input = container.querySelector('input[type="text"], textarea');
+                    if (input) {
+                        const nativeSetter = Object.getOwnPropertyDescriptor(
+                            input.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype, 'value'
+                        ).set;
+                        nativeSetter.call(input, value);
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        input.dispatchEvent(new Event('change', { bubbles: true }));
+                        console.log('AnI: set ' + labelText + ' = ' + value);
+                    }
+                }
+
+                // Helper: set a Gradio slider value
+                function setSlider(labelText, value) {
+                    const container = findByLabel(labelText);
+                    if (!container) { console.log('AnI: slider not found: ' + labelText); return; }
+                    const range = container.querySelector('input[type="range"]');
+                    const number = container.querySelector('input[type="number"]');
+                    if (range) {
+                        const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                        nativeSetter.call(range, value);
+                        range.dispatchEvent(new Event('input', { bubbles: true }));
+                        range.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                    if (number) {
+                        const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                        nativeSetter.call(number, value);
+                        number.dispatchEvent(new Event('input', { bubbles: true }));
+                        number.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                    console.log('AnI: set slider ' + labelText + ' = ' + value);
+                }
+
+                // Helper: set a Gradio checkbox
+                function setCheckbox(labelText, checked) {
+                    const container = findByLabel(labelText);
+                    if (!container) { console.log('AnI: checkbox not found: ' + labelText); return; }
+                    const input = container.querySelector('input[type="checkbox"]');
+                    if (input && input.checked !== checked) {
+                        input.click();
+                        console.log('AnI: toggled ' + labelText + ' = ' + checked);
+                    }
+                }
+
+                // First, open the Advanced accordion if it's closed
+                const accordions = document.querySelectorAll('.label-wrap');
+                for (const acc of accordions) {
+                    if (acc.textContent.trim().includes('Advanced')) {
+                        const isOpen = acc.classList.contains('open') ||
+                                       acc.parentElement?.querySelector('.hide') === null;
+                        if (!acc.classList.contains('open')) {
+                            acc.click();
+                        }
+                        break;
+                    }
+                }
+
+                // Apply settings after a short delay to let accordion open
+                setTimeout(function() {
+                    setSlider('Temperature', ${String.format("%.1f", temperature)});
+                    ${if (maxTokens != null) "setSlider('Max output tokens', $maxTokens);" else ""}
+                    setTextbox('Model override', '$modelJs');
+                    setCheckbox('Include context', $includeContext);
+                    setCheckbox('Show sources to model', $includeSources);
+                    setTextbox('System instruction', '$systemJs');
+                    console.log('AnI: All advanced settings applied');
+                }, 500);
+            })();
+        """.trimIndent()
+
+        webView.evaluateJavascript(jsCode) { result ->
+            Log.d("AnI", "Advanced settings injection result: $result")
+        }
+
+        Toast.makeText(this, "Settings applied to chat interface", Toast.LENGTH_SHORT).show()
         hideAdvancedDrawer()
         drawerLayout.close()
     }
@@ -590,7 +914,7 @@ class MainActivity : AppCompatActivity() {
                 val role = msg.optString("role", "unknown")
                 val text = msg.optString("content", "")
                 if (text.isNotBlank()) {
-                    sb.append("[${role}]: $text\n\n")
+                    sb.append("[${role}]: ${stripGradioChrome(text)}\n\n")
                 }
             }
             sb.toString().ifBlank { content }
@@ -598,6 +922,38 @@ class MainActivity : AppCompatActivity() {
             Log.w("AnI", "Failed to parse JSON session $filename, treating as plain text: ${e.message}")
             content
         }
+    }
+
+    private fun stripGradioChrome(text: String): String {
+        var cleaned = text
+
+        // Strip "Loading..." lines anywhere (standalone or after [assistant]:)
+        cleaned = cleaned.replace(Regex("""(?m)^?\s*Loading\.{3}\s*$"""), "")
+        cleaned = cleaned.replace(Regex("""\[assistant\]:\s*Loading\.{3}\s*"""), "")
+
+        // Strip Gradio UI chrome patterns anywhere in text
+        val chromeRegexes = listOf(
+            Regex("""Textbox\s+Dropdown\s+Ask AnI\s*"""),
+            Regex("""Attachments:\s*none"""),
+            Regex("""[\u2630☰]\s*Tools\s*\n?\s*Built with Gradio\s*\n?\s*[·\u00b7]\s*\n?\s*Settings"""),
+            Regex("""[\u2630☰]\s+Tools\s+Built with Gradio\s+[·\u00b7]\s+Settings"""),
+            Regex("""Built with Gradio\s*[·\u00b7]\s*Settings"""),
+            Regex("""📋\s*Copy"""),
+            Regex("""\uD83D\uDCCB\s*Copy"""),
+            Regex("""(?m)^\s*Copy\s*$"""),  // standalone "Copy" on its own line
+        )
+        for (regex in chromeRegexes) {
+            cleaned = cleaned.replace(regex, "")
+        }
+
+        // Strip "ð" garbled emoji sequences (common from DOM scrape encoding issues)
+        cleaned = cleaned.replace(Regex("""ð[\u0080-\u00FF]{2,3}"""), "")
+        // Strip "Â·" (garbled "·") and lone "Â" artifacts
+        cleaned = cleaned.replace("Â·", "·")
+        cleaned = cleaned.replace(Regex("""Â(?=[^a-zA-Z])"""), "")
+        // Collapse excessive blank lines (3+ newlines → 2)
+        cleaned = cleaned.replace(Regex("""\n{3,}"""), "\n\n")
+        return cleaned.trim()
     }
     
     private fun launchVaultPicker() {
@@ -635,6 +991,87 @@ class MainActivity : AppCompatActivity() {
     
     
     class SessionBridge(private val activity: MainActivity) {
+
+        @JavascriptInterface
+        fun autoSaveTriggered() {
+            Log.d("AnI", "autoSaveTriggered() called from MutationObserver")
+            activity.runOnUiThread {
+                if (activity.isAutoSaveEnabled) {
+                    activity.saveCurrentSession()
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun onSendWithContext(userMessage: String) {
+            Log.d("AnI", "onSendWithContext called, userMsg=${userMessage.length} chars, pending=${activity.pendingSessionContent.size}")
+            activity.runOnUiThread {
+                val sessionCount = activity.pendingSessionContent.size
+                val combined = StringBuilder()
+                combined.append("=== LOADED CONTEXT ($sessionCount session(s)) ===\n\n")
+                for ((key, content) in activity.pendingSessionContent) {
+                    val shortKey = key.substringAfterLast("/")
+                    combined.append("--- $shortKey ---\n")
+                    combined.append(content.trimEnd())
+                    combined.append("\n\n")
+                }
+                combined.append("=== END CONTEXT ===\n\n")
+                combined.append(userMessage)
+
+                val finalText = combined.toString()
+                val finalBytes = finalText.toByteArray(Charsets.UTF_8)
+                val finalBase64 = android.util.Base64.encodeToString(finalBytes, android.util.Base64.NO_WRAP)
+
+                // Disconnect interceptor first so the programmatic click goes through
+                activity.disconnectSendInterceptor()
+
+                val js = """
+                    (function() {
+                        const textareas = document.querySelectorAll('textarea');
+                        let ta = null;
+                        for (let t of textareas) {
+                            if (t.offsetParent !== null && t.clientHeight > 30) { ta = t; break; }
+                        }
+                        if (!ta) { console.log('AnI: textarea not found for context send'); return; }
+
+                        const nativeSetter = Object.getOwnPropertyDescriptor(
+                            window.HTMLTextAreaElement.prototype, 'value'
+                        ).set;
+                        var decoded = (function(b64) {
+                            var binStr = atob(b64);
+                            var bytes = new Uint8Array(binStr.length);
+                            for (var i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+                            return new TextDecoder('utf-8').decode(bytes);
+                        })('$finalBase64');
+                        nativeSetter.call(ta, decoded);
+                        ta.dispatchEvent(new Event('input', { bubbles: true }));
+                        ta.dispatchEvent(new Event('change', { bubbles: true }));
+
+                        setTimeout(function() {
+                            const sendBtn = document.querySelector('#aniAskBtn, button[aria-label*="Send"], button[title*="Send"]')
+                                || Array.from(document.querySelectorAll('button')).find(b => b.querySelector('svg') && b.offsetParent !== null);
+                            if (sendBtn) {
+                                sendBtn.click();
+                                console.log('AnI: context+message sent via ' + (sendBtn.id || sendBtn.className));
+                            } else {
+                                console.log('AnI: send button not found');
+                            }
+                        }, 150);
+                    })();
+                """.trimIndent()
+
+                activity.webView.evaluateJavascript(js) { result ->
+                    Log.d("AnI", "Context send result: $result")
+                }
+
+                activity.clearAllChips()
+                Toast.makeText(
+                    activity,
+                    "Sent with context from $sessionCount session(s)",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
 
         @JavascriptInterface
         fun receiveSessionData(json: String) {
@@ -800,6 +1237,16 @@ class MainActivity : AppCompatActivity() {
             return bankInternal(md, html, baseName, projectSafe)
         }
 
+        // ---------- Public helpers for MainActivity ----------
+
+        fun resolveProjectsDirPublic(createIfMissing: Boolean): DocumentFile? {
+            return resolveProjectsDir(createIfMissing)
+        }
+
+        fun getOrCreateDirPublic(parent: DocumentFile, name: String): DocumentFile? {
+            return getOrCreateDir(parent, name)
+        }
+
         // ---------- Internal ----------
 
         private fun bankInternal(md: String?, html: String?, baseName: String?, projectSafe: String?): String {
@@ -904,7 +1351,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 val projectsDir = resolveProjectsDir(false) ?: return ""
                 Log.d("AnI", "projectsDir found: ${projectsDir?.uri}")
-                val projectDir = projectsDir.findFile(project.lowercase())
+                val projectDir = projectsDir.findFile(project) ?: projectsDir.findFile(project.lowercase())
                 val projectFolder = projectDir?.findFile("Sessions") ?: return ""
                 Log.d("AnI", "Looking for project folder: ${project.lowercase()}, found: ${projectFolder?.uri}")
                 Log.d("AnI", "Files in ${project.lowercase()}: ${projectFolder?.listFiles()?.map { it.name }?.joinToString()}")

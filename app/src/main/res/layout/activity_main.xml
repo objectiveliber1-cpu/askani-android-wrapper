@@ -5,7 +5,7 @@
     android:id="@+id/drawer_layout"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
-
+    
     <!-- Main content: WebView -->
     <FrameLayout
         android:layout_width="match_parent"
@@ -16,6 +16,28 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
             
+        <!-- Session chip container overlay -->
+        <HorizontalScrollView
+            android:id="@+id/chip_scroll_view"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:layout_marginBottom="72dp"
+            android:background="#CC333333"
+            android:scrollbars="none"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:id="@+id/chip_container"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:paddingTop="6dp"
+                android:paddingBottom="6dp" />
+        </HorizontalScrollView>
+
         <!-- Floating Action Button to open drawer -->
         <com.google.android.material.floatingactionbutton.FloatingActionButton
             android:id="@+id/fab_drawer"
@@ -26,33 +48,213 @@
             android:src="@android:drawable/ic_menu_manage"
             app:tint="@android:color/white" />
     </FrameLayout>
-
-    <!-- Navigation Drawer -->
-    <LinearLayout
-        android:id="@+id/drawer_container"
+    
+    <!-- Single drawer wrapper (DrawerLayout only allows one child per gravity edge) -->
+    <FrameLayout
         android:layout_width="300dp"
         android:layout_height="match_parent"
-        android:layout_gravity="start"
+        android:layout_gravity="start">
+
+    <!-- Main Navigation Drawer -->
+    <LinearLayout
+        android:id="@+id/drawer_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
         android:background="?android:attr/colorBackground"
         android:orientation="vertical">
-
+        
         <!-- Drawer Header -->
         <include layout="@layout/drawer_header" />
-
+        
         <!-- Projects List -->
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/projects_recycler"
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1" />
-
-        <!-- Load Button -->
-        <Button
-            android:id="@+id/btn_load_sessions"
+        
+        <!-- Session Management Buttons -->
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_margin="16dp"
-            android:text="Load Selected Sessions" />
-    </LinearLayout>
+            android:orientation="vertical"
+            android:padding="16dp">
+            
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Save to Project:"
+                android:textStyle="bold"
+                android:layout_marginBottom="4dp" />
 
+            <Spinner
+                android:id="@+id/spinner_project"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="4dp" />
+
+            <Button
+                android:id="@+id/btn_new_project"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="+ New Project"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/btn_load_sessions"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="📂 Load Selected Sessions"
+                android:layout_marginBottom="8dp" />
+            
+            <Button
+                android:id="@+id/btn_save_session"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="💾 Save Session"
+                android:layout_marginBottom="8dp" />
+            
+            <Button
+                android:id="@+id/btn_toggle_autosave"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="🔄 Auto-Save: OFF"
+                android:layout_marginBottom="8dp" />
+            
+            <Button
+                android:id="@+id/btn_advanced_options"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="⚙️ Advanced Options" />
+        </LinearLayout>
+    </LinearLayout>
+    
+    <!-- Advanced Options Sub-Drawer -->
+    <ScrollView
+        android:id="@+id/advanced_drawer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="?android:attr/colorBackground"
+        android:visibility="gone">
+        
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="16dp">
+            
+            <!-- Back Button -->
+            <Button
+                android:id="@+id/btn_back_to_main"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="← Back to Sessions"
+                android:layout_marginBottom="16dp" />
+            
+            <!-- Model Override -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Model Override"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+            
+            <Spinner
+                android:id="@+id/spinner_model"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="16dp" />
+            
+            <!-- Include Context -->
+            <CheckBox
+                android:id="@+id/checkbox_include_context"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Include Context"
+                android:checked="true"
+                android:layout_marginBottom="8dp" />
+            
+            <!-- Include Sources -->
+            <CheckBox
+                android:id="@+id/checkbox_include_sources"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Include Sources in Context"
+                android:checked="false"
+                android:layout_marginBottom="16dp" />
+            
+            <!-- Temperature -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Temperature"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+            
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginBottom="16dp">
+                
+                <SeekBar
+                    android:id="@+id/seekbar_temperature"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:max="200"
+                    android:progress="100" />
+                
+                <TextView
+                    android:id="@+id/text_temperature_value"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="1.0"
+                    android:layout_marginStart="8dp"
+                    android:minWidth="40dp" />
+            </LinearLayout>
+            
+            <!-- Max Output Tokens -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Max Output Tokens"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+            
+            <EditText
+                android:id="@+id/edit_max_tokens"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="number"
+                android:hint="e.g., 4096"
+                android:layout_marginBottom="16dp" />
+            
+            <!-- System Instructions -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="System Instructions"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+            
+            <EditText
+                android:id="@+id/edit_system_instructions"
+                android:layout_width="match_parent"
+                android:layout_height="150dp"
+                android:gravity="top"
+                android:inputType="textMultiLine"
+                android:hint="Optional custom system prompt..."
+                android:layout_marginBottom="16dp" />
+            
+            <!-- Apply Button -->
+            <Button
+                android:id="@+id/btn_apply_advanced"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Apply Settings" />
+        </LinearLayout>
+    </ScrollView>
+
+    </FrameLayout>
 </androidx.drawerlayout.widget.DrawerLayout>
